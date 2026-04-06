@@ -4,6 +4,12 @@ A Bayesian framework for NCAA basketball team ratings that produces calibrated p
 
 > **Key finding:** A ridge prior over team effects is worth approximately three weeks of additional data in early-season forecast accuracy. The resulting posterior predictive intervals are empirically well-calibrated: a 90% PI contains ~90% of actual outcomes.
 
+## Preview
+
+![Rolling OSA RMSE 2025-26](https://raw.githubusercontent.com/aaronjdanielson/statistical-kenpom/main/scripts/rolling_osa_rmse_2025_26.png)
+
+![Model 1 vs Model 2 scatter](https://raw.githubusercontent.com/aaronjdanielson/statistical-kenpom/main/scripts/scatter_model1_vs_model2.png)
+
 ## What this is
 
 Most college basketball rating systems (KenPom, BartTorvik, BPI) assign each team a number. This system assigns each team a **distribution**. The difference matters in two places:
@@ -92,37 +98,37 @@ pytest tests/ -m integration           # full suite including KenPom validation 
 
 ### One-step-ahead forecast quality
 
-![Rolling OSA RMSE 2025-26](scripts/rolling_osa_rmse_2025_26.png)
+![Rolling OSA RMSE 2025-26](https://raw.githubusercontent.com/aaronjdanielson/statistical-kenpom/main/scripts/rolling_osa_rmse_2025_26.png)
 
 *Model 1 spikes to RMSE 22+ in week 1 (underdetermined system). Model 2 opens at 14.6 and stays there. The gap closes by December as Model 1 accumulates data.*
 
-![Rolling OSA scatter 2025-26](scripts/rolling_osa_scatter_2025_26.png)
+![Rolling OSA scatter 2025-26](https://raw.githubusercontent.com/aaronjdanielson/statistical-kenpom/main/scripts/rolling_osa_scatter_2025_26.png)
 
 ### Calibration
 
-![Calibration curve 2025-26](scripts/calibration_curve_2025_26.png)
+![Calibration curve 2025-26](https://raw.githubusercontent.com/aaronjdanielson/statistical-kenpom/main/scripts/calibration_curve_2025_26.png)
 
 *Nearly perfect calibration across all coverage levels. Slight underconfidence (curve above diagonal) is the safe failure mode.*
 
 ### Rolling ratings with uncertainty
 
-![Rolling net rating 2025-26](scripts/rolling_net_rtg_2025_26.png)
+![Rolling net rating 2025-26](https://raw.githubusercontent.com/aaronjdanielson/statistical-kenpom/main/scripts/rolling_net_rtg_2025_26.png)
 
 *Posterior mean ± 1σ / ±2σ bands. Uncertainty collapses from ~2 pts/100 in November to ~0.3 pts/100 by January.*
 
 ### Pre-game predictive distributions
 
-![Pregame distributions 2025-26](scripts/pregame_distributions_2025_26.png)
+![Pregame distributions 2025-26](https://raw.githubusercontent.com/aaronjdanielson/statistical-kenpom/main/scripts/pregame_distributions_2025_26.png)
 
 *Full posterior predictive density for each team in a matchup. Overlap = competitiveness. Dotted lines = actual outcomes.*
 
 ### Model comparison scatter
 
-![Model 1 vs Model 2 scatter](scripts/scatter_model1_vs_model2.png)
+![Model 1 vs Model 2 scatter](https://raw.githubusercontent.com/aaronjdanielson/statistical-kenpom/main/scripts/scatter_model1_vs_model2.png)
 
 ### Team uncertainty fans
 
-![Team uncertainty fan 2025-26](scripts/team_uncertainty_fan_2025_26.png)
+![Team uncertainty fan 2025-26](https://raw.githubusercontent.com/aaronjdanielson/statistical-kenpom/main/scripts/team_uncertainty_fan_2025_26.png)
 
 ## Notes
 
