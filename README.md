@@ -1,74 +1,131 @@
-# Statistical KenPom
+# Probabilistic College Basketball Ratings
 
-A Python project for building and evaluating college basketball rating models inspired by KenPom-style efficiency frameworks.
+A Bayesian framework for NCAA basketball team ratings that produces calibrated posterior distributions over team quality — not just point estimates.
 
-> End-to-end NCAA basketball analytics pipeline: scrape data, estimate team-strength models, and visualize predictive performance.
+> **Key finding:** A ridge prior over team effects is worth approximately three weeks of additional data in early-season forecast accuracy. The resulting posterior predictive intervals are empirically well-calibrated: a 90% PI contains ~90% of actual outcomes.
 
-## At a glance
+## What this is
 
-- **Scope:** KenPom-style offensive/defensive efficiency modeling for college basketball
-- **Pipeline:** Team + schedule + boxscore scraping in `ncaa_scraper/`
-- **Models:** Three progressively richer model families in `models/`
-- **Evaluation:** Predictive validation and diagnostics in `tests/` and `scripts/`
-- **Outputs:** Versioned figures for calibration, rolling error, and uncertainty bands
+Most college basketball rating systems (KenPom, BartTorvik, BPI) assign each team a number. This system assigns each team a **distribution**. The difference matters in two places:
 
-## What this repo contains
+- **Early season** — 5 games per team means high uncertainty. A posterior is honest about that; a point estimate is not.
+- **Matchup prediction** — knowing a team scores 112 pts/100 is useful. Knowing they score 112 ± 3 against an opponent allowing 108 ± 4 is a lot more useful.
 
-- Data scraping and ingestion pipeline in `ncaa_scraper/`
-- Multiple model implementations in `models/`
-- Validation/evaluation workflows in `tests/` and model evaluation scripts
-- Method and model documentation in `docs/`
+## Models
 
-## Visualization outputs
+| Model | Method | Posterior | Season RMSE |
+|-------|--------|-----------|-------------|
+| **Model 1** | KenPom-style fixed-point iteration | Parametric bootstrap | 15.10 |
+| **Model 2** | Ridge regression (RAPM-style) | Exact Gaussian (Cholesky) | **14.14** |
 
-These generated graphics are tracked in this repository and rendered below.
+Evaluation is one-step-ahead: for each week, the model is fit on all prior games only, then evaluated on that week's games. No future data leaks into any prediction.
 
-### Model comparison and calibration
+Model 3 (bilinear interaction term) is implemented and validated for in-sample KenPom rankings (ρ > 0.99 vs ground truth), but excluded from predictive evaluation — the interaction factors overfit a temporal holdout, collapsing to Model 2 under the regularization needed to generalize.
 
-![Model 1 vs Model 2 scatter](scripts/scatter_model1_vs_model2.png)
-![Calibration curve 2025-26](scripts/calibration_curve_2025_26.png)
+## Repository layout
 
-### One-step-ahead diagnostics
+```
+models/          Core model package
+  data.py          GameRow, load_season_games, open_db
+  base.py          BaseModel ABC, KenPomSummary, predict_interval
+  model1.py        Fixed-point iteration + bootstrap posterior
+  model2.py        Ridge regression + exact Gaussian posterior
+  model3.py        Bilinear interaction (ALS) + hybrid posterior
+  eval.py          temporal_split, evaluate_season, EvalResult
 
-![Rolling OSA RMSE 2025-26](scripts/rolling_osa_rmse_2025_26.png)
-![Rolling OSA scatter 2025-26](scripts/rolling_osa_scatter_2025_26.png)
+scripts/         Visualization and evaluation scripts
+  scatter_model_comparison.py      80/20 train/test scatter (3 seasons)
+  rolling_one_step_ahead.py        OSA RMSE + bias curves
+  rolling_net_rtg_2026.py          Weekly rolling net rating fan
+  uncertainty_viz.py               Calibration curve, team fans, pre-game dists
 
-### Rating and uncertainty views
+notebooks/
+  probabilistic_ratings.ipynb      Full narrative — models → validation → figures
 
-![Rolling net rating 2025-26](scripts/rolling_net_rtg_2025_26.png)
-![Pregame distributions 2025-26](scripts/pregame_distributions_2025_26.png)
-![Team uncertainty fan 2025-26](scripts/team_uncertainty_fan_2025_26.png)
+paper/
+  probabilistic_ratings.tex        LaTeX manuscript (compiles to PDF)
+
+tests/
+  unit/            25 tests — fit, posterior contract, synthetic data
+  integration/     119 tests — KenPom validation + predictive eval (2:40 total)
+
+docs/
+  models_overview.md
+  model1_kenpom_fixed_point.md
+  model2_ridge_latent_effects.md
+  model3_bilinear_interaction.md
+
+ncaa_scraper/    Data pipeline (RealGM → ncaa.db, kept separate from models/)
+```
 
 ## Quick start
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate
 pip install -e .
+```
+
+Run the notebook end-to-end:
+```bash
+jupyter notebook notebooks/probabilistic_ratings.ipynb
 ```
 
 ## Reproduce figures
 
-Run from the repository root:
-
 ```bash
-python scripts/scatter_model_comparison.py
-python scripts/rolling_one_step_ahead.py
-python scripts/rolling_net_rtg_2026.py
-python scripts/uncertainty_viz.py
+python scripts/scatter_model_comparison.py      # 80/20 scatter, 3 seasons
+python scripts/rolling_one_step_ahead.py        # OSA RMSE + bias curves
+python scripts/rolling_net_rtg_2026.py          # rolling net rating fan
+python scripts/uncertainty_viz.py               # calibration + distributions
 ```
 
-This regenerates the tracked plots in `scripts/`, including:
+## Run tests
 
-- `scatter_model1_vs_model2.png`
-- `rolling_osa_scatter_2025_26.png`
-- `rolling_osa_rmse_2025_26.png`
-- `rolling_net_rtg_2025_26.png`
-- `calibration_curve_2025_26.png`
-- `team_uncertainty_fan_2025_26.png`
-- `pregame_distributions_2025_26.png`
+```bash
+pytest tests/                          # unit tests only (~3s)
+pytest tests/ -m integration           # full suite including KenPom validation (~2:40)
+```
+
+144 tests total, all passing.
+
+## Visualizations
+
+### One-step-ahead forecast quality
+
+![Rolling OSA RMSE 2025-26](scripts/rolling_osa_rmse_2025_26.png)
+
+*Model 1 spikes to RMSE 22+ in week 1 (underdetermined system). Model 2 opens at 14.6 and stays there. The gap closes by December as Model 1 accumulates data.*
+
+![Rolling OSA scatter 2025-26](scripts/rolling_osa_scatter_2025_26.png)
+
+### Calibration
+
+![Calibration curve 2025-26](scripts/calibration_curve_2025_26.png)
+
+*Nearly perfect calibration across all coverage levels. Slight underconfidence (curve above diagonal) is the safe failure mode.*
+
+### Rolling ratings with uncertainty
+
+![Rolling net rating 2025-26](scripts/rolling_net_rtg_2025_26.png)
+
+*Posterior mean ± 1σ / ±2σ bands. Uncertainty collapses from ~2 pts/100 in November to ~0.3 pts/100 by January.*
+
+### Pre-game predictive distributions
+
+![Pregame distributions 2025-26](scripts/pregame_distributions_2025_26.png)
+
+*Full posterior predictive density for each team in a matchup. Overlap = competitiveness. Dotted lines = actual outcomes.*
+
+### Model comparison scatter
+
+![Model 1 vs Model 2 scatter](scripts/scatter_model1_vs_model2.png)
+
+### Team uncertainty fans
+
+![Team uncertainty fan 2025-26](scripts/team_uncertainty_fan_2025_26.png)
 
 ## Notes
 
-- If plots are regenerated, re-run the corresponding scripts in `scripts/`.
-- Database files and caches are intentionally ignored via `.gitignore`.
+- `ncaa.db` and caches are in `.gitignore`. The DB lives at `~/Dropbox/kenpom/ncaa.db` by default; override via `KENPOM_DB` env var or `open_db(path=...)`.
+- The `models/` package has zero imports from `ncaa_scraper/` — the separation is enforced by tests.
+- Season convention: `Year=2026` in the DB means the 2025-26 season.

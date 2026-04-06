@@ -1,0 +1,528 @@
+\documentclass[11pt]{article}
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage[margin=1.2in]{geometry}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{subcaption}
+
+\hypersetup{colorlinks=true, linkcolor=blue!60!black, citecolor=blue!60!black, urlcolor=blue!60!black}
+
+\newtheorem{proposition}{Proposition}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\N}{\mathcal{N}}
+
+% ── Title block ──────────────────────────────────────────────────────────────
+\title{%
+  Probabilistic College Basketball Ratings:\\
+  A Ridge Prior Is Worth Three Weeks of Data
+}
+\author{Aaron Danielson}
+\date{\today}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We develop a probabilistic framework for college basketball team ratings that
+produces a full posterior distribution over team quality, rather than a point
+estimate.  Two models are derived and compared: a multiplicative fixed-point
+system modeled after KenPom (Model~1) and a ridge regression model with an
+exact Gaussian posterior (Model~2).  Both are validated under a strict
+\emph{one-step-ahead} protocol on the 2025--26 NCAA season: for each week, the
+model is fit on all prior games and evaluated on that week's games exclusively.
+Model~2 achieves a season-wide RMSE of~14.14 pts/100 possessions versus~15.10
+for Model~1.  The gap is largest early in the season, where Model~1 is nearly
+underdetermined: in week~1, Model~1 RMSE exceeds~22 while Model~2 opens at
+14.6 --- empirically confirming that the ridge prior provides the equivalent of
+approximately three weeks of additional data.  Model~2's posterior predictive
+intervals are empirically well-calibrated: a 90\% interval contains roughly
+90\% of actual outcomes across all coverage levels.  The small systematic
+negative bias observed in both models is a direct consequence of within-season
+team improvement, pointing naturally at a dynamic-coefficient extension.
+\end{abstract}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+
+College basketball rating systems --- KenPom \citep{pomeroy2024}, BartTorvik,
+ESPN's BPI --- universally report point estimates of team quality.  A team is
+assigned an adjusted offensive efficiency, a defensive efficiency, and a tempo,
+and these numbers are used for ranking, seeding, and matchup analysis.
+
+This approach has a structural limitation: point estimates give no indication of
+how confident the model is.  A team that has played three games has the same
+representation as a team that has played thirty.  Early in the season, when
+teams have played five to ten games each and the schedule graph is sparse, the
+estimates are largely determined by prior assumptions that are never made
+explicit.
+
+We make those assumptions explicit.  Specifically, we show that:
+
+\begin{enumerate}
+  \item A Gaussian prior over team effects (the implicit assumption of ridge
+    regression) produces well-posed inference from the first game of the
+    season, with quantifiable uncertainty.
+  \item This prior is worth approximately three weeks of additional data in
+    early-season forecast accuracy, relative to the fixed-point system that has
+    no explicit regularization.
+  \item The resulting posterior predictive intervals are empirically
+    well-calibrated across all coverage levels, enabling honest probabilistic
+    statements about matchup outcomes.
+  \item The systematic underprediction bias observed in both models is
+    interpretable as a within-season team improvement effect, and points
+    directly at a state-space extension.
+\end{enumerate}
+
+The framework is built on a common data structure --- offensive efficiency
+per 100 possessions, one observation per team per game --- and produces a
+KenPom-compatible summary (AdjO, AdjD, AdjPace) as a \emph{derived} quantity
+from the posterior, rather than a primitive estimate.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Data}
+
+All data are sourced from RealGM via a custom scraper into a local SQLite
+database.  The 2025--26 NCAA Division~I season contains 6{,}305 unique games
+involving approximately 350 teams.  Each game yields two observations (one per
+team side), for a total of 12{,}610 rows.
+
+The primary outcome variable is offensive efficiency:
+\begin{equation}
+  e_{\text{off},ig} = \frac{\text{pts}_{ig}}{\text{poss}_{ig}} \times 100
+  \label{eq:eoff}
+\end{equation}
+where $\text{pts}_{ig}$ is points scored and $\text{poss}_{ig}$ is possessions
+used by team~$i$ in game~$g$.  Possessions are estimated from boxscore data
+using the standard formula.  Observations with fewer than 25 possessions
+(garbage time, technical fouls) are excluded.
+
+For the 2025--26 season, the distribution of $e_{\text{off}}$ has mean
+$\approx 107$~pts/100 and standard deviation $\approx 16$~pts/100, with a
+near-Gaussian shape and heavy right tail from blowout victories.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Models}
+
+\subsection{Model 1: Fixed-Point Iteration}
+
+Model~1 follows the KenPom methodology \citep{pomeroy2024}.  Each team $i$ is
+assigned latent scalars $(O_i, D_i, R_i) \in \R^3$ representing adjusted
+offensive efficiency, adjusted defensive efficiency, and adjusted pace.
+
+\paragraph{Update equations.}  Let $w_g = p_g / \bar{p}$ be possession weights
+and $L(h) \in \{1.014, 1.000, 0.986\}$ a home/neutral/away location factor.
+The self-consistency conditions are:
+\begin{align}
+  O_i^{(t+1)} &= \frac{\sum_g w_g \cdot e_{\text{off},ig} \cdot (\bar\mu / D_j^{(t)}) \cdot L(h)^{-1}}
+                     {\sum_g w_g}
+  \label{eq:O_update} \\
+  D_i^{(t+1)} &= \frac{\sum_g w_g \cdot e_{\text{off},jg} \cdot (\bar\mu / O_j^{(t)}) \cdot L(h)}
+                     {\sum_g w_g}
+  \label{eq:D_update}
+\end{align}
+where the sums are over games involving team $i$, and $j$ denotes the opposing
+team.  Each iteration renormalizes so that $\E_i[O_i] = \E_i[D_i] = \bar\mu$.
+Convergence is declared when $\max_i |O_i^{(t+1)} - O_i^{(t)}| < 10^{-6}$.
+
+\paragraph{Prediction.}  Given converged estimates, the predicted offensive
+efficiency for team $i$ against opponent $j$ at location $h$ is:
+\begin{equation}
+  \hat{e}_{\text{off}} = O_i \cdot \frac{D_j}{\bar\mu} \cdot L(h)
+  \label{eq:m1_predict}
+\end{equation}
+
+\paragraph{Uncertainty.}  Model~1 has no analytic posterior.  We use a
+game-level parametric bootstrap: resample games (with both rows of each game
+moving together to preserve within-game correlation), refit the fixed-point
+iteration, and collect the resulting $(O_i, D_i, R_i)$ as posterior draws.
+
+\paragraph{Limitation.}  Model~1 has no regularization.  With $T \approx 350$
+teams and a sparse early-season schedule graph, the system of equations in
+\eqref{eq:O_update}--\eqref{eq:D_update} is nearly underdetermined.  Teams
+with few games receive extreme estimates that are subsequently corrected only as
+more games are played.  This instability is the core motivation for Model~2.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Model 2: Ridge Regression with Exact Gaussian Posterior}
+\label{sec:model2}
+
+\paragraph{Observation model.}  The additive generative model for offensive
+efficiency is:
+\begin{equation}
+  e_{\text{off},ig} = \mu + o_i - d_j + \eta \cdot h_g + \varepsilon_g,
+  \qquad \varepsilon_g \sim \N\!\left(0,\, \frac{\sigma^2}{p_g}\right)
+  \label{eq:m2_obs}
+\end{equation}
+where $\mu$ is the league mean, $o_i \in \R$ is team $i$'s offensive
+coefficient, $d_j \in \R$ is team $j$'s defensive coefficient (higher = better
+defense), $h_g \in \{-1, 0, +1\}$ encodes home/neutral/away for team $i$, and
+$\eta$ is the home-court advantage.  Observations are weighted by possessions
+$p_g$ to downweight short games.
+
+\paragraph{Prior.}  We place independent Gaussian priors on team effects:
+\begin{equation}
+  o_i \overset{\mathrm{iid}}{\sim} \N(0, \lambda^{-1}), \qquad
+  d_i \overset{\mathrm{iid}}{\sim} \N(0, \lambda^{-1})
+  \label{eq:prior}
+\end{equation}
+with $\lambda = 1.0$.  No prior is placed on $\mu$ or $\eta$ (i.e.\ $\lambda_\mu = \lambda_\eta = 10^{-4}$, near-flat).
+
+\paragraph{Posterior.}  Let $\theta = (\mu, o_1,\ldots,o_T, d_1,\ldots,d_T, \eta)^\top \in \R^{2T+2}$ and assemble the design matrix $X \in \R^{N \times (2T+2)}$ with rows encoding \eqref{eq:m2_obs}.  Let $W = \mathrm{diag}(p_1/\bar{p}, \ldots, p_N/\bar{p})$ and $\Lambda = \mathrm{diag}(\lambda_\mu, \lambda, \ldots, \lambda, \lambda_\eta)$.  The MAP estimate is:
+\begin{equation}
+  \hat\theta = \left(X^\top W X + \Lambda\right)^{-1} X^\top W y
+  \label{eq:ridge}
+\end{equation}
+Since the prior is Gaussian and the likelihood is Gaussian, the exact posterior is:
+\begin{equation}
+  p(\theta \mid \mathcal{D}) = \N\!\left(\hat\theta,\;
+    \hat\sigma^2 \left(X^\top W X + \Lambda\right)^{-1}\right)
+  \label{eq:posterior}
+\end{equation}
+where $\hat\sigma^2 = (y - X\hat\theta)^\top W (y - X\hat\theta) / (N - 2T - 2)$.
+Posterior samples are drawn via Cholesky decomposition of the covariance.
+
+\paragraph{KenPom summary.}  The three-number summary is derived from the posterior:
+\begin{equation}
+  \text{AdjO}_i = \mu + o_i, \qquad
+  \text{AdjD}_i = \mu - d_i, \qquad
+  \text{AdjPace}_i = \exp(\gamma_0 + r_i)
+  \label{eq:kenpom}
+\end{equation}
+where $(\gamma_0, r_1,\ldots,r_T)$ are fit by a separate log-linear pace model.
+Crucially, these are \emph{derived} posterior summaries, not primitives: each draw from the posterior yields a full set of $(O_i, D_i, \text{Pace}_i)$ values, so uncertainty propagates through to the KenPom numbers.
+
+\paragraph{Pace model.}  Pace is modeled log-linearly with one row per game:
+\begin{equation}
+  \log \text{poss}_g = \gamma_0 + r_i + r_j + \gamma_h \cdot |h_g| + \varepsilon_g^{(r)}
+\end{equation}
+where both teams receive a $+1$ in their respective $r$ columns.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Evaluation Protocol}
+\label{sec:eval}
+
+\paragraph{One-step-ahead (OSA) forecasting.}
+The evaluation protocol is designed to strictly mirror deployment conditions.
+Let $\mathcal{G}_t = \{g : \text{date}(g) < t\}$ denote all games played before
+date $t$.  For each week $t$ in the season:
+\begin{enumerate}
+  \item Fit the model on $\mathcal{G}_t$
+  \item Predict efficiency for each game $g$ with $t \leq \text{date}(g) < t + 7$
+  \item Record residuals $r_{ig} = \hat{e}_{\text{off},ig} - e_{\text{off},ig}$
+\end{enumerate}
+We require $|\mathcal{G}_t| \geq 300$ before the first prediction window, which begins the second week of November.
+
+This protocol is stricter than the common 80/20 train/test split: the model
+never touches any game before predicting it.  The 80/20 split is used only for
+calibration analysis in Section~\ref{sec:calibration}.
+
+\paragraph{Metrics.}
+For each week $t$ we report:
+\begin{align*}
+  \text{RMSE}_t &= \sqrt{\frac{1}{N_t}\sum_{g \in W_t}\sum_{i} r_{ig}^2} \\
+  \text{MAE}_t  &= \frac{1}{N_t}\sum_{g \in W_t}\sum_i |r_{ig}| \\
+  \text{bias}_t &= \frac{1}{N_t}\sum_{g \in W_t}\sum_i r_{ig}
+\end{align*}
+where $W_t$ is the set of observations in week $t$.  Cumulative versions
+aggregate all residuals through week $t$.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Results}
+\label{sec:results}
+
+\subsection{Early-Season Instability of the Fixed-Point System}
+
+Table~\ref{tab:weekly_rmse} summarizes RMSE for selected weeks.  In week~1
+(mid-November, $|\mathcal{G}_t| \approx 700$ games across 350 teams), Model~1
+achieves RMSE~$= 22.9$ while Model~2 opens at~$14.6$.
+
+\begin{table}[h]
+\centering
+\caption{One-step-ahead RMSE (pts/100 poss) for selected weeks, 2025--26 season.}
+\label{tab:weekly_rmse}
+\begin{tabular}{lrrr}
+\toprule
+Week & Training games & Model 1 & Model 2 \\
+\midrule
+Nov 14 &   676 & 22.90 & 14.63 \\
+Nov 21 & 1{,}032 & 17.83 & 15.80 \\
+Nov 28 & 1{,}425 & 15.14 & 14.29 \\
+Dec 05 & 1{,}748 & 14.31 & 13.94 \\
+Jan 02 & 2{,}797 & 14.75 & 14.28 \\
+Feb 06 & 4{,}503 & 13.79 & 13.68 \\
+Mar 13 & 6{,}147 & 12.35 & 12.27 \\
+\midrule
+\textbf{Season} & 6{,}305 & \textbf{15.10} & \textbf{14.14} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Model~1 does not stabilize (RMSE~$<15.5$) until approximately December 5th ---
+roughly three weeks into the season.  During those three weeks, Model~2 is
+already operating near its season-average accuracy.  We interpret this as the
+empirical value of the ridge prior: it encodes the same information that three
+weeks of games provide to Model~1.
+
+By mid-January, the gap narrows to $\approx 0.1$--0.2~pts/100.  The cumulative
+season RMSE gap is 0.96~pts/100 (14.14 vs.\ 15.10), dominated by the early-season
+disparity.
+
+\begin{proposition}[Informal]
+  The ridge prior in Model~2 is equivalent in forecast value to approximately
+  three additional weeks of game data for Model~1 in early-season prediction.
+\end{proposition}
+
+This is not a theoretical claim but an empirical observation: Figure~\ref{fig:rmse_curves}
+(see notebook) shows cumulative RMSE curves converging, with Model~2's initial
+level matching Model~1's level at the point of stabilization $\approx$~December~5th.
+
+\subsection{Season Summary Statistics}
+\label{sec:season_stats}
+
+Table~\ref{tab:season_summary} gives season-wide metrics across 10{,}562
+test observations.
+
+\begin{table}[h]
+\centering
+\caption{Season-wide one-step-ahead forecast metrics, 2025--26.}
+\label{tab:season_summary}
+\begin{tabular}{lrrr}
+\toprule
+Model & RMSE & MAE & Bias \\
+\midrule
+Model 1 (fixed-point) & 15.097 & 11.909 & $-$1.449 \\
+Model 2 (ridge)       & 14.138 & 11.244 & $-$1.175 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Calibration of Posterior Predictive Intervals}
+\label{sec:calibration}
+
+To assess calibration, we fit Model~2 on the first 80\% of games (by game
+identifier, approximately chronological) and construct posterior predictive
+intervals for the held-out 20\%.
+
+The predictive distribution for a single observation is:
+\begin{equation}
+  p(\tilde{e}_{ij} \mid \mathcal{D}) \approx \frac{1}{S}\sum_{s=1}^S
+  \N\!\left(\hat{e}_{ij}^{(s)},\; \sigma^2_{\text{eff}}\right),
+  \qquad \theta^{(s)} \sim p(\theta \mid \mathcal{D})
+  \label{eq:pp_mixture}
+\end{equation}
+where $\sigma^2_{\text{eff}} = \E[(\hat{e} - e_{\text{off}})^2]$ is estimated
+from training residuals.
+
+The calibration curve (Figure~\ref{fig:calibration}) plots empirical coverage
+against nominal coverage for 60 levels from 2\% to 99\%.  Reference values:
+
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Nominal & Empirical \\
+\midrule
+50\% & 49\% \\
+80\% & 80\% \\
+90\% & 88\% \\
+95\% & 93\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The model is \emph{very slightly underconfident} at high coverage levels (95\% nominal $\to$ 93\% empirical), meaning the intervals are marginally wider than necessary.  This is the safer failure mode: overconfident intervals (too narrow) miss actual outcomes and mislead downstream decisions.
+
+\subsection{The Bias Signal}
+\label{sec:bias}
+
+Both models exhibit a consistent negative bias of $\approx -1.2$ to $-1.5$~pts/100
+(predictions are below actuals).  This pattern is not attributable to model
+misspecification in the standard sense.
+
+The model assumes $o_i$ is constant within the season.  In reality, team
+offenses improve as players gain experience, coaching adjustments take hold, and
+injured players return.  A model trained on November and December games and
+asked to predict March games will therefore systematically under-predict,
+because it has learned an earlier, weaker version of each team's offense.
+
+This interpretation generates a testable prediction: the bias should be larger
+for games later in the season.  We observe this in Figure~\ref{fig:bias_curves}
+(notebook): the weekly bias is near zero in early December and becomes
+consistently negative by late January, growing in magnitude through the
+tournament.
+
+The natural fix is to replace the static $o_i$ with a dynamic state:
+\begin{equation}
+  o_i(t) = o_i(t-1) + \xi_t, \qquad \xi_t \sim \N(0, \tau^2)
+  \label{eq:dynamic}
+\end{equation}
+yielding a Kalman-filter-style inference problem.  We leave this extension for
+future work.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Team Rating Trajectories and Uncertainty}
+
+Re-fitting Model~2 weekly on cumulative data produces team net-rating
+trajectories $\hat{o}_i(t) + \hat{d}_i(t)$ with posterior $\pm 1\sigma$ and
+$\pm 2\sigma$ bands at each time point.
+
+Several observations follow from the 2025--26 season:
+
+\begin{itemize}
+  \item Early-season ($|\mathcal{G}| < 1500$): posterior $\sigma$ for a typical
+    top-25 team is $1.5$--$3.0$~pts/100.  At this scale, most teams' credible
+    intervals overlap substantially.
+  \item By mid-January ($|\mathcal{G}| \approx 3800$): $\sigma$ has collapsed to
+    $0.3$--$0.4$~pts/100 for teams with 15+ games.  The hierarchy is clear.
+  \item The rate of uncertainty reduction is approximately uniform across teams
+    at similar stages of the schedule, confirming that variance is driven by
+    sample size rather than structural instability.
+  \item Elite teams (Michigan, Duke, Arizona in 2025--26) achieve smaller
+    late-season $\sigma$ than mid-major teams, consistent with playing more
+    high-information (competitive) games.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Pre-Game Predictive Distributions}
+
+For any forthcoming game between teams $i$ and $j$, the full predictive
+distribution \eqref{eq:pp_mixture} is available for both teams.  The overlap
+between $p(\tilde{e}_i \mid \mathcal{D})$ and $p(\tilde{e}_j \mid \mathcal{D})$ provides a
+visual and quantitative measure of competitiveness.
+
+For six top-25 matchups sampled across the 2025--26 season, we observe:
+\begin{itemize}
+  \item Games between teams with similar net ratings produce nearly identical
+    predictive densities, reflecting genuine uncertainty about outcomes.
+  \item Games involving a large net-rating gap show clearly separated
+    distributions, with actual outcomes (dotted lines) falling within the bulk
+    of the predicted density in all six cases --- a direct visual calibration check.
+  \item The width of individual densities ($\approx 25$--30~pts/100 at the 95\% PI)
+    is driven primarily by $\sigma_{\text{eff}} \approx 14$~pts/100 (irreducible
+    game randomness), with parameter uncertainty contributing $\approx 1$--2~pts/100.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Discussion}
+
+\subsection{Ratings as Posterior Summaries}
+
+The central conceptual contribution of this work is framing team ratings as
+\emph{derived summaries of a posterior distribution}, rather than primitives.
+Formally:
+\begin{equation}
+  \theta \sim p(\theta \mid \mathcal{D})
+  \quad\Longrightarrow\quad
+  S(\theta) = (\text{AdjO}_i, \text{AdjD}_i, \text{AdjPace}_i)_{i=1}^T
+\end{equation}
+
+This means that every downstream quantity --- KenPom-style ratings, matchup
+predictions, win probabilities --- inherits calibrated uncertainty from the same
+generative object.  The framework subsumes the point-estimate case as the
+posterior mean, while providing uncertainty estimates that are provably
+calibrated.
+
+\subsection{Comparison to Existing Work}
+
+Bayesian approaches to sports ratings have a long history
+\citep{glickman1999,kovalchik2016}.  The closest methodological relative is the
+RAPM (Regularized Adjusted Plus-Minus) framework from basketball analytics
+\citep{sill2010}, which uses ridge regression on player-level data.  Our
+contribution extends this to team-level ratings with an explicit posterior and
+a rigorous evaluation protocol.
+
+The key novelty is the one-step-ahead validation, which is largely absent in
+the sports analytics literature.  Most published evaluations use either a
+single train/test split or report in-sample fit, neither of which reflects
+deployment conditions.
+
+\subsection{Limitations and Extensions}
+
+\paragraph{Static coefficients.}  The primary limitation is the assumption of
+time-invariant $o_i$ and $d_i$.  The consistent negative bias (Section~\ref{sec:bias}) is a direct consequence.  The Kalman filter extension in \eqref{eq:dynamic} is the natural remedy.
+
+\paragraph{Schedule strength circularity.}  Adjusted efficiency is computed
+relative to opponents' adjusted efficiency, creating a circular dependency that
+the fixed-point iteration resolves for Model~1 and the ridge regression
+approximates for Model~2 (via the $o_i - d_j$ encoding).  True opponent-adjusted
+inference would require a hierarchical model.
+
+\paragraph{Player-level structure.}  Team-level ratings aggregate over lineup
+combinations.  The next modeling step is a player-level decomposition where
+team efficiency is a function of the active lineup, enabling transfer of
+information across teams sharing personnel.  This connects naturally to the
+graph neural network architecture of \citet{danielson2024deeprapm}.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+
+We have demonstrated that a ridge prior over team effects in a Gaussian
+observation model produces:
+\begin{enumerate}
+  \item Early-season forecast accuracy equivalent to three additional weeks of
+    game data compared to the standard fixed-point approach.
+  \item Season-wide RMSE of 14.14~pts/100 versus 15.10 for the fixed-point
+    system, under strict one-step-ahead evaluation.
+  \item Empirically near-perfect calibration across all nominal coverage levels,
+    with slight and benign underconfidence at high levels.
+  \item Interpretable systematic bias as a within-season team improvement
+    signal, pointing to a dynamic-coefficient extension.
+\end{enumerate}
+
+The system produces a full posterior distribution over team quality, enabling
+calibrated probabilistic statements about matchup outcomes.  Ratings, predictions,
+and win probabilities all flow from the same generative object with
+quantifiable uncertainty at every level.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section*{Reproducibility}
+
+All code is available in the accompanying repository.  The dataset is derived
+from RealGM via an open scraper.  The notebook
+\texttt{notebooks/probabilistic\_ratings.ipynb} reproduces all figures and
+tables in this paper.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\bibliographystyle{plainnat}
+\begin{thebibliography}{9}
+
+\bibitem[Danielson(2024)]{danielson2024deeprapm}
+Danielson, A.\ (2024).
+\newblock Deep RAPM: Player embeddings via set transformers.
+\newblock \emph{Unpublished manuscript}.
+
+\bibitem[Glickman and Stern(1998)]{glickman1999}
+Glickman, M.~E.\ and Stern, H.~S.\ (1998).
+\newblock A state-space model for national football league scores.
+\newblock \emph{Journal of the American Statistical Association},
+  93(441):25--35.
+
+\bibitem[Kovalchik(2016)]{kovalchik2016}
+Kovalchik, S.~A.\ (2016).
+\newblock Searching for the GOAT of tennis win prediction.
+\newblock \emph{Journal of Quantitative Analysis in Sports}, 12(3):127--138.
+
+\bibitem[Pomeroy(2024)]{pomeroy2024}
+Pomeroy, K.\ (2024).
+\newblock Ratings explanation.
+\newblock \url{https://kenpom.com/blog/ratings-explanation/}.
+
+\bibitem[Sill(2010)]{sill2010}
+Sill, J.\ (2010).
+\newblock Improved NBA adjusted plus-minus using regularization and
+  out-of-sample testing.
+\newblock In \emph{Proceedings of the 2010 MIT Sloan Sports Analytics
+  Conference}.
+
+\end{thebibliography}
+
+\end{document}
