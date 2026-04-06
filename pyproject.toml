@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=72"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "ncaa-scraper"
+version = "0.1.0"
+description = "NCAA game data pipeline for building team efficiency ratings"
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4==4.14.3",
+    "curl-cffi==0.15.0",
+    "lxml==6.0.2",
+    "tenacity==9.1.4",
+    "numpy>=2.0",
+    "scipy>=1.13",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.5",
+    "pytest-mock==3.14.0",
+]
+
+[project.scripts]
+ncaa-pipeline = "ncaa_scraper.pipeline:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ncaa_scraper*", "models*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: makes real HTTP requests — run with: pytest -m integration",
+]
+addopts = "-m 'not integration'"
+testpaths = ["tests"]
