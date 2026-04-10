@@ -118,6 +118,8 @@ class Model1(BaseModel):
         O   = theta[:T]
         D   = theta[T:2 * T]
         mu  = float(O.mean())
+        if mu == 0.0:
+            mu = 100.0  # degenerate fallback — league mean should never be zero
         tidx = self._tidx
         out = np.empty(len(rows))
         for k, r in enumerate(rows):
@@ -193,9 +195,12 @@ class Model1(BaseModel):
             R_new[~mask] = R[~mask]
 
             # Renormalize to anchor league means
-            O_new *= mu_off  / O_new.mean()
-            D_new *= mu_off  / D_new.mean()
-            R_new *= mu_pace / R_new.mean()
+            O_mean = O_new.mean()
+            D_mean = D_new.mean()
+            R_mean = R_new.mean()
+            if O_mean > 0: O_new *= mu_off  / O_mean
+            if D_mean > 0: D_new *= mu_off  / D_mean
+            if R_mean > 0: R_new *= mu_pace / R_mean
 
             delta = max(
                 np.max(np.abs(O_new - O)),

@@ -37,6 +37,25 @@ from models.data import GameRow
 logger = logging.getLogger(__name__)
 
 
+def _safe_cholesky(M: np.ndarray) -> np.ndarray:
+    """Cholesky with progressive jitter fallback for near-singular matrices."""
+    try:
+        return np.linalg.cholesky(M)
+    except np.linalg.LinAlgError:
+        pass
+    for exp in range(-9, 0):
+        jitter = 10.0 ** exp
+        try:
+            L = np.linalg.cholesky(M + jitter * np.eye(len(M)))
+            logger.warning("Cholesky required jitter=%.0e", jitter)
+            return L
+        except np.linalg.LinAlgError:
+            continue
+    # Last resort: diagonal approximation
+    logger.error("Cholesky failed even with jitter; falling back to diagonal")
+    return np.diag(np.sqrt(np.maximum(np.diag(M), 1e-10)))
+
+
 class Model2(BaseModel):
     """
     Ridge latent-effects model with exact Gaussian posterior sampling.
@@ -96,8 +115,8 @@ class Model2(BaseModel):
         theta_eff  = self.theta_hat_[:n_eff]
         theta_pace = self.theta_hat_[n_eff:]
 
-        L_eff  = np.linalg.cholesky(self._Sigma_eff)
-        L_pace = np.linalg.cholesky(self._Sigma_pace)
+        L_eff  = _safe_cholesky(self._Sigma_eff)
+        L_pace = _safe_cholesky(self._Sigma_pace)
 
         z_eff  = rng.standard_normal((n, n_eff))
         z_pace = rng.standard_normal((n, n_pace))
@@ -244,7 +263,7 @@ class Model2(BaseModel):
             X[k, 1 + i] =  1.0       # +r_i
             X[k, 1 + j] =  1.0       # +r_j
             X[k, T + 1] =  float(h)  # γ_h · h
-            y[k] = np.log(poss)
+            y[k] = np.log(max(poss, 1.0))
 
         # Penalty: λ_pace on r; tiny ridge on γ₀ and γ_h for stability
         lam = np.full(n_cols, self.lambda_pace)

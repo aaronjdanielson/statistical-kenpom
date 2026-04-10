@@ -77,6 +77,17 @@ def load_season_games(
     return rows
 
 
+def parse_date(s: str) -> "datetime":
+    """Parse RealGM date strings like 'Nov 14, 2025' or 'Nov 14,2025'."""
+    from datetime import datetime
+    for fmt in ("%b %d, %Y", "%b %d,%Y"):
+        try:
+            return datetime.strptime(s.strip(), fmt)
+        except ValueError:
+            pass
+    raise ValueError(f"Cannot parse date: {s!r}")
+
+
 def open_db(path: Path = _DEFAULT_DB) -> sqlite3.Connection:
     """Open ncaa.db read-only with WAL mode for concurrent access."""
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)

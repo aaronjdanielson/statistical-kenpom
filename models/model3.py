@@ -47,7 +47,7 @@ from scipy import linalg
 
 from models.base import BaseModel, KenPomSummary
 from models.data import GameRow
-from models.model2 import Model2
+from models.model2 import Model2, _safe_cholesky
 
 logger = logging.getLogger(__name__)
 
@@ -160,8 +160,8 @@ class Model3(BaseModel):
         n_pace  = T + 2
 
         # ---- Gaussian draws for main effects ----
-        L_main  = np.linalg.cholesky(self._Sigma_main)
-        L_pace  = np.linalg.cholesky(self._Sigma_pace)
+        L_main  = _safe_cholesky(self._Sigma_main)
+        L_pace  = _safe_cholesky(self._Sigma_pace)
         z_main  = rng.standard_normal((n, n_main))
         z_pace  = rng.standard_normal((n, n_pace))
         draws_main = self._theta_main + z_main @ L_main.T
