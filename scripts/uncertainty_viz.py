@@ -31,7 +31,7 @@ from scipy.stats import gaussian_kde
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from models.data import open_db, load_season_games, GameRow
+from models.data import open_db, load_season_games, parse_date, GameRow
 from models.model2 import Model2
 from models.eval import temporal_split
 
@@ -59,13 +59,6 @@ team_names = dict(cur.fetchall())
 all_rows = load_season_games(conn, SEASON)
 conn.close()
 
-def parse_date(s):
-    for fmt in ("%b %d, %Y", "%b %d,%Y"):
-        try:
-            return datetime.strptime(s.strip(), fmt)
-        except ValueError:
-            pass
-    raise ValueError(s)
 
 game_dt  = {gid: parse_date(ds) for gid, ds in game_order}
 all_gids = [gid for gid, _ in game_order]

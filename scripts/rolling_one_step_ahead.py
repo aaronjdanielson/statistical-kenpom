@@ -29,7 +29,7 @@ from matplotlib.gridspec import GridSpec
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from models.data import open_db, load_season_games, GameRow
+from models.data import open_db, load_season_games, parse_date, GameRow
 from models.model1 import Model1
 from models.model2 import Model2
 
@@ -51,14 +51,6 @@ cur.execute("""
 """, (SEASON,))
 game_order = cur.fetchall()
 conn.close()
-
-def parse_date(s):
-    for fmt in ("%b %d, %Y", "%b %d,%Y"):
-        try:
-            return datetime.strptime(s.strip(), fmt)
-        except ValueError:
-            pass
-    raise ValueError(s)
 
 game_dt = {gid: parse_date(ds) for gid, ds in game_order}
 all_gids = [gid for gid, _ in game_order]

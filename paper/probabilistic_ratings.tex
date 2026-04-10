@@ -174,7 +174,7 @@ $p_g$ to downweight short games.
   d_i \overset{\mathrm{iid}}{\sim} \N(0, \lambda^{-1})
   \label{eq:prior}
 \end{equation}
-with $\lambda = 1.0$.  No prior is placed on $\mu$ or $\eta$ (i.e.\ $\lambda_\mu = \lambda_\eta = 10^{-4}$, near-flat).
+with $\lambda_{\text{team}} = 100.0$ (prior variance $\sigma^2 = 0.01$, equivalent to a prior belief that team effects lie within $\pm 0.3$ pts/100 of zero with 95\% probability before seeing data).  No prior is placed on $\mu$ or $\eta$ (i.e.\ $\lambda_\mu = \lambda_\eta = 10^{-4}$, near-flat).
 
 \paragraph{Posterior.}  Let $\theta = (\mu, o_1,\ldots,o_T, d_1,\ldots,d_T, \eta)^\top \in \R^{2T+2}$ and assemble the design matrix $X \in \R^{N \times (2T+2)}$ with rows encoding \eqref{eq:m2_obs}.  Let $W = \mathrm{diag}(p_1/\bar{p}, \ldots, p_N/\bar{p})$ and $\Lambda = \mathrm{diag}(\lambda_\mu, \lambda, \ldots, \lambda, \lambda_\eta)$.  The MAP estimate is:
 \begin{equation}

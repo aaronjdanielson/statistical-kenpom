@@ -325,3 +325,125 @@ def test_adj_o_adj_d_in_reasonable_range(fit_fn, game_rows):
         assert 60 < ks.adj_o < 160, f"AdjO out of range: {ks.adj_o}"
         assert 60 < ks.adj_d < 160, f"AdjD out of range: {ks.adj_d}"
         assert 40 < ks.adj_pace < 120, f"AdjPace out of range: {ks.adj_pace}"
+
+
+# --------------------------------------------------------------------------- #
+# New tests from coverage review                                                #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("fit_fn", [_fit_model1, _fit_model2, _fit_model3])
+def test_unseen_team_falls_back_to_baseline(fit_fn, game_rows):
+    """Predicting for a team not in training must not raise and must return a
+    finite value near the league baseline (not an extreme outlier)."""
+    m = fit_fn(game_rows)
+    unseen_row = GameRow(game_id=9999, season=2024,
+                         team_id=999, opp_id=1, pts=70, poss=70.0, h=0)
+    pred = m.predict_efficiency([unseen_row])
+    assert np.isfinite(pred[0]), "Prediction for unseen team must be finite"
+    assert 60.0 < pred[0] < 160.0, f"Unseen team prediction too extreme: {pred[0]}"
+
+
+@pytest.mark.parametrize("fit_fn", [_fit_model1, _fit_model2, _fit_model3])
+def test_posterior_mean_close_to_point_estimate(fit_fn, game_rows):
+    """With 500 draws, posterior mean should be within 0.5 pts/100 of MAP."""
+    m = fit_fn(game_rows)
+    rng = np.random.default_rng(0)
+    draws = m.sample_posterior(500, rng)
+    T = len(m.teams_)
+    # Check o_i coefficients (index 1..T in Model2/3 theta)
+    # For Model1 theta layout is [O*T, D*T, R*T]; AdjO = O_i directly
+    # For Model2/3 AdjO = mu + o_i. Either way the posterior mean should
+    # reproduce the MAP summary within tolerance.
+    map_summary  = m.point_summary()
+    post_summary = m.sample_kenpom_summary(500, np.random.default_rng(0))
+    for tid in (1, 2, 3):
+        map_o  = map_summary[tid].adj_o
+        mean_o = float(np.mean([s[tid].adj_o for s in post_summary]))
+        assert abs(mean_o - map_o) < 0.5, (
+            f"Team {tid}: posterior mean AdjO {mean_o:.2f} far from MAP {map_o:.2f}"
+        )
+
+
+def test_temporal_split_single_game():
+    """train_frac near 1.0 with only 1 game should put that game in train."""
+    from models.eval import temporal_split
+    rows = [
+        GameRow(game_id=1, season=2024, team_id=1, opp_id=2, pts=70, poss=70.0, h=1),
+        GameRow(game_id=1, season=2024, team_id=2, opp_id=1, pts=65, poss=70.0, h=-1),
+    ]
+    train, test = temporal_split(rows, train_frac=0.95)
+    assert len({r.game_id for r in train}) == 1
+    assert len({r.game_id for r in test}) == 0
+
+
+def test_model3_rank0_equals_model2(game_rows):
+    """Model3 with rank=0 (no bilinear term) must produce identical KenPom
+    summaries to Model2, since the two-stage design holds main effects fixed."""
+    m2 = Model2(); m2.fit_rows(game_rows, 2024)
+    m3 = Model3(rank=0); m3.fit_rows(game_rows, 2024)
+    s2 = m2.point_summary()
+    s3 = m3.point_summary()
+    for tid in (1, 2, 3):
+        assert s3[tid].adj_o    == pytest.approx(s2[tid].adj_o,    abs=1e-4)
+        assert s3[tid].adj_d    == pytest.approx(s2[tid].adj_d,    abs=1e-4)
+        assert s3[tid].adj_pace == pytest.approx(s2[tid].adj_pace, abs=1e-4)
+
+
+def test_model3_bilinear_reduces_insample_rmse(game_rows):
+    """Model3 with rank>0 must reduce in-sample RMSE vs rank=0 (Model2 baseline)."""
+    import numpy as np
+    m0 = Model3(rank=0); m0.fit_rows(game_rows, 2024)
+    m3 = Model3(rank=2, lambda_ab=1.0); m3.fit_rows(game_rows, 2024)
+    actual = np.array([r.pts / r.poss * 100.0 for r in game_rows])
+    rmse0 = float(np.sqrt(np.mean((m0.predict_efficiency(game_rows) - actual) ** 2)))
+    rmse3 = float(np.sqrt(np.mean((m3.predict_efficiency(game_rows) - actual) ** 2)))
+    assert rmse3 < rmse0, (
+        f"Model3(rank=2) in-sample RMSE {rmse3:.3f} should be < "
+        f"rank=0 RMSE {rmse0:.3f}"
+    )
+
+
+def test_evaluate_all_seasons_skips_bad_season():
+    """evaluate_all_seasons must skip seasons that raise and return valid ones."""
+    from unittest.mock import MagicMock, patch
+    from models.eval import evaluate_all_seasons
+
+    good = MagicMock()
+
+    def _mock_evaluate(model_cls, conn, season, **kw):
+        if season == 9999:
+            raise ValueError("no data for season 9999")
+        return good
+
+    with patch("models.eval.evaluate_season", side_effect=_mock_evaluate):
+        results = evaluate_all_seasons(None, None, seasons=[2024, 9999])
+
+    assert results == [good], "Should return only the valid season's result"
+
+
+def test_min_poss_filter():
+    """load_season_games must drop games where either team's POSS < min_poss."""
+    import sqlite3
+    from models.data import load_season_games
+
+    conn = sqlite3.connect(":memory:")
+    conn.executescript("""
+        CREATE TABLE boxscores (
+            GameID INTEGER, Season INTEGER, TeamID INTEGER,
+            PTS INTEGER, POSS REAL
+        );
+        CREATE TABLE schedules (
+            GameID INTEGER, TeamID INTEGER, Location TEXT
+        );
+        -- Game 1: both teams have 60 poss — should pass min_poss=25 filter
+        INSERT INTO boxscores VALUES (1, 2024, 1, 70, 60.0);
+        INSERT INTO boxscores VALUES (1, 2024, 2, 65, 60.0);
+        -- Game 2: one team has only 20 poss — should be dropped
+        INSERT INTO boxscores VALUES (2, 2024, 1, 40, 20.0);
+        INSERT INTO boxscores VALUES (2, 2024, 2, 38, 60.0);
+    """)
+
+    rows = load_season_games(conn, 2024, min_poss=25.0)
+    game_ids = {r.game_id for r in rows}
+    assert game_ids == {1}, f"Expected only game 1; got game_ids={game_ids}"
+    assert len(rows) == 2, f"Expected 2 rows (both sides of game 1); got {len(rows)}"

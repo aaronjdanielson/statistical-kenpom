@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Sequence, Type
 
 import numpy as np
+from scipy.stats import norm as _norm
 
 from models.data import GameRow, load_season_games
 
@@ -202,7 +203,7 @@ def evaluate_all_seasons(
             results.append(r)
         except Exception as e:
             logger.warning("evaluate_season failed for %s season=%d: %s",
-                           model_cls.__name__, season, e)
+                           getattr(model_cls, "__name__", str(model_cls)), season, e)
     return results
 
 
@@ -250,3 +251,154 @@ def print_report(results: list[EvalResult]) -> None:
             f"{np.mean([r.mae  for r in g]):>6.2f}  "
             f"{np.mean([r.coverage_95 for r in g]):>6.1%}"
         )
+
+
+# --------------------------------------------------------------------------- #
+# Win probability                                                               #
+# --------------------------------------------------------------------------- #
+
+def win_probability(
+    model,
+    team_id: int,
+    opp_id: int,
+    *,
+    h: int = 0,
+    poss: float = 70.0,
+    n_draws: int = 500,
+    rng: np.random.Generator | None = None,
+) -> float:
+    """
+    Probability that team_id beats opp_id in a game with expected possessions
+    ``poss`` and venue indicator ``h`` (+1=home, 0=neutral, -1=away for team_id).
+
+    Uses the Normal approximation
+
+        P(win) = Φ(pred_margin / pred_std)
+
+    where:
+      pred_margin = expected point margin (team_id pts − opp_id pts) from
+                    posterior mean efficiency predictions.
+      pred_std    = combined posterior parameter uncertainty and irreducible
+                    per-possession game noise (model's σ_eff).
+
+    Parameters
+    ----------
+    model     : fitted BaseModel instance
+    team_id   : integer team identifier for the team of interest
+    opp_id    : integer team identifier for the opponent
+    h         : venue for team_id (+1 home, 0 neutral, -1 away)
+    poss      : expected possessions per game (used to convert pts/100 → pts)
+    n_draws   : posterior draws used to estimate parameter variance
+    rng       : numpy Generator; a fresh one is created if None
+
+    Returns
+    -------
+    float in [0, 1] — probability that team_id wins.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    season = getattr(model, "season_", 0)
+    scale  = poss / 100.0
+
+    row_team = GameRow(game_id=0, season=season,
+                       team_id=team_id, opp_id=opp_id,
+                       pts=0, poss=poss, h=h)
+    row_opp  = GameRow(game_id=0, season=season,
+                       team_id=opp_id,  opp_id=team_id,
+                       pts=0, poss=poss, h=-h)
+
+    draws = model.sample_posterior(n_draws, rng)
+    # margin in actual points for each posterior draw
+    margin_draws = np.array([
+        (model._predict_from_theta(th, [row_team])[0]
+         - model._predict_from_theta(th, [row_opp])[0]) * scale
+        for th in draws
+    ])
+
+    pred_margin = float(margin_draws.mean())
+
+    # Irreducible noise: two independent scoring processes, each with std
+    # σ_eff pts/100, converted to points.
+    sigma_eff   = float(np.sqrt(getattr(model, "_sigma2_eff", 0.0)))
+    sigma_noise = np.sqrt(2.0) * sigma_eff * scale
+
+    pred_std = float(np.sqrt(margin_draws.var() + sigma_noise ** 2))
+
+    if pred_std <= 0:
+        return 0.5 if pred_margin == 0 else float(pred_margin > 0)
+    return float(_norm.cdf(pred_margin / pred_std))
+
+
+# --------------------------------------------------------------------------- #
+# Conformal calibration                                                         #
+# --------------------------------------------------------------------------- #
+
+_DEFAULT_LEVELS = (0.50, 0.60, 0.70, 0.80, 0.90, 0.95)
+
+
+def conformal_calibration_scores(
+    model,
+    test_rows: list[GameRow],
+    actual: np.ndarray | None = None,
+    n_draws: int = 300,
+    rng: np.random.Generator | None = None,
+    levels: Sequence[float] = _DEFAULT_LEVELS,
+) -> tuple[np.ndarray, dict[float, float]]:
+    """
+    Compute conformal nonconformity scores and empirical coverage table.
+
+    For each test observation i:
+        z_i = (y_i − ŷ_i) / σ_total_i
+
+    where σ_total combines posterior parameter uncertainty (std of posterior
+    predictions across draws) with irreducible game noise (σ_eff).  Under a
+    correctly-specified Gaussian model, z_i ~ N(0, 1).
+
+    Parameters
+    ----------
+    model      : fitted BaseModel instance
+    test_rows  : GameRow list for test observations
+    actual     : observed efficiencies (pts/100); computed from test_rows if None
+    n_draws    : posterior draws for σ_param estimation
+    rng        : numpy Generator; fresh one created if None
+    levels     : nominal coverage levels to evaluate
+
+    Returns
+    -------
+    z_scores : np.ndarray, shape (n_obs,)
+        Normalized residuals.  Values close to N(0,1) indicate good calibration.
+    coverage : dict[float, float]
+        {nominal_level: empirical_coverage} — compares the model's Gaussian PI
+        at each nominal level to the fraction of z_scores inside ±z_{level}.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    if actual is None:
+        actual = np.array([r.pts / r.poss * 100.0 for r in test_rows])
+
+    # Point predictions (MAP)
+    pred_map = model.predict_efficiency(test_rows)
+
+    # Posterior prediction std (parameter uncertainty component)
+    draws = model.sample_posterior(n_draws, rng)
+    preds_draws = np.array([
+        model._predict_from_theta(th, test_rows) for th in draws
+    ])          # (n_draws, n_obs)
+    sigma_param = preds_draws.std(axis=0)          # (n_obs,)
+
+    # Irreducible noise
+    sigma_eff   = float(np.sqrt(getattr(model, "_sigma2_eff", 0.0)))
+    sigma_total = np.sqrt(sigma_param ** 2 + sigma_eff ** 2)
+    sigma_total = np.maximum(sigma_total, 1e-8)    # guard division by zero
+
+    z_scores = (actual - pred_map) / sigma_total
+
+    # Empirical coverage at each nominal level
+    coverage: dict[float, float] = {}
+    for level in levels:
+        z_crit = float(_norm.ppf((1 + level) / 2))
+        coverage[level] = float(np.mean(np.abs(z_scores) <= z_crit))
+
+    return z_scores, coverage

@@ -17,7 +17,7 @@ import matplotlib.dates as mdates
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from models.data import open_db, load_season_games
+from models.data import open_db, load_season_games, parse_date
 from models.model2 import Model2
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -47,14 +47,6 @@ team_names = dict(cur.fetchall())
 
 all_rows = load_season_games(conn, SEASON)
 conn.close()
-
-def parse_date(s):
-    for fmt in ("%b %d, %Y", "%b %d,%Y"):
-        try:
-            return datetime.strptime(s.strip(), fmt)
-        except ValueError:
-            pass
-    raise ValueError(f"Cannot parse date: {s!r}")
 
 # Map game_id → parsed date
 game_dt = {gid: parse_date(ds) for gid, ds in game_order}

@@ -259,6 +259,11 @@ class Model3(BaseModel):
         a -= a.mean(axis=0, keepdims=True)
         b -= b.mean(axis=0, keepdims=True)
 
+        # rank=0: no bilinear term — skip ALS entirely
+        if k == 0:
+            sigma2 = float(np.average(resid_main ** 2, weights=w))
+            return a, b, sigma2
+
         lam_eye = self.lambda_ab * np.eye(k)
 
         for iteration in range(self.max_iter):
