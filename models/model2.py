@@ -78,7 +78,25 @@ class Model2(BaseModel):
     # Fit                                                                  #
     # ------------------------------------------------------------------ #
 
-    def fit_rows(self, rows, season: int) -> "Model2":
+    def fit_rows(
+        self,
+        rows,
+        season: int,
+        *,
+        sample_weight: np.ndarray | None = None,
+    ) -> "Model2":
+        """
+        Fit on a pre-loaded list of GameRow.
+
+        Parameters
+        ----------
+        rows          : sequence of GameRow
+        season        : season end-year (stored on self.season_)
+        sample_weight : optional per-row multiplicative weight applied on top
+                        of the existing possession weight.  Length must equal
+                        len(rows).  Use ``eval.recency_weights()`` to build
+                        exponential recency weights.
+        """
         self.season_ = season
         self._rows = list(rows)
 
@@ -86,8 +104,20 @@ class Model2(BaseModel):
         self.teams_ = np.array(teams, dtype=np.int64)
         self._tidx = {tid: i for i, tid in enumerate(teams)}
 
-        theta_eff,  self._Sigma_eff  = self._fit_efficiency(rows)
-        theta_pace, self._Sigma_pace = self._fit_pace(rows)
+        # Build per-game recency weight (first occurrence of each game_id wins;
+        # both rows of a game have the same age so this is always consistent).
+        game_w: dict[int, float] | None = None
+        if sample_weight is not None:
+            sw = np.asarray(sample_weight, dtype=np.float64)
+            game_w = {}
+            for i, r in enumerate(rows):
+                if r.game_id not in game_w:
+                    game_w[r.game_id] = float(sw[i])
+        else:
+            sw = None
+
+        theta_eff,  self._Sigma_eff  = self._fit_efficiency(rows, sw)
+        theta_pace, self._Sigma_pace = self._fit_pace(rows, game_w)
         self.theta_hat_ = np.concatenate([theta_eff, theta_pace])
 
         logger.info(
@@ -170,7 +200,9 @@ class Model2(BaseModel):
     # ------------------------------------------------------------------ #
 
     def _fit_efficiency(
-        self, rows: Sequence[GameRow]
+        self,
+        rows: Sequence[GameRow],
+        sample_weight: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
         Fit the efficiency ridge model.
@@ -198,7 +230,7 @@ class Model2(BaseModel):
             X[k, 1 + T + j] = -1.0          # -d_j
             X[k, 2 * T + 1] =  float(r.h)  # η · h
             y[k] = r.pts / r.poss * 100.0
-            w[k] = r.poss
+            w[k] = r.poss * (float(sample_weight[k]) if sample_weight is not None else 1.0)
 
         # Penalty matrix (diagonal): ridge on o_i and d_j.
         # μ and η nominally unpenalized, but a tiny jitter (1e-4) is added to
@@ -221,7 +253,9 @@ class Model2(BaseModel):
         return theta_hat, Sigma
 
     def _fit_pace(
-        self, rows: Sequence[GameRow]
+        self,
+        rows: Sequence[GameRow],
+        game_weight: dict[int, float] | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
         Fit the pace ridge model (one row per game).
@@ -270,12 +304,23 @@ class Model2(BaseModel):
         lam[0]     = 1e-4
         lam[T + 1] = 1e-4
 
-        A = X.T @ X + np.diag(lam)
-        b = X.T @ y
+        # Recency weights (one per game)
+        if game_weight is not None:
+            gw = np.array([game_weight.get(gid, 1.0)
+                           for gid in game_data], dtype=np.float64)
+            Xw = X * gw[:, None]
+        else:
+            Xw = X
+
+        A = Xw.T @ X + np.diag(lam)
+        b = Xw.T @ y
         theta_hat = linalg.solve(A, b, assume_a="sym")
 
         resid = y - X @ theta_hat
-        self._sigma2_pace = float(np.mean(resid ** 2))
+        if game_weight is not None:
+            self._sigma2_pace = float(np.average(resid ** 2, weights=gw))
+        else:
+            self._sigma2_pace = float(np.mean(resid ** 2))
 
         Sigma = self._sigma2_pace * linalg.inv(A)
         return theta_hat, Sigma

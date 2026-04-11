@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Sequence, Type
 
 import numpy as np
@@ -256,6 +257,47 @@ def print_report(results: list[EvalResult]) -> None:
 # --------------------------------------------------------------------------- #
 # Win probability                                                               #
 # --------------------------------------------------------------------------- #
+
+def recency_weights(
+    rows: list[GameRow],
+    game_dates: dict[int, datetime],
+    cutoff_date: datetime,
+    half_life_days: float,
+) -> np.ndarray:
+    """
+    Compute exponential recency weights for ``Model2.fit_rows(sample_weight=...)``.
+
+    Each row is assigned weight::
+
+        w_i = exp(-κ · age_i),   κ = log(2) / half_life_days
+
+    where ``age_i = (cutoff_date − game_date).days``.  Rows whose game date is
+    at or after the cutoff date receive weight 1.0.
+
+    Parameters
+    ----------
+    rows          : GameRow list passed to fit_rows
+    game_dates    : mapping from game_id to the game's datetime
+    cutoff_date   : the prediction date (typically the start of the test window)
+    half_life_days: number of days after which a game's weight is halved
+
+    Returns
+    -------
+    np.ndarray of shape (len(rows),) with values in (0, 1].
+
+    Example
+    -------
+    >>> sw = recency_weights(train_rows, game_dt, cutoff, half_life_days=45)
+    >>> model = Model2()
+    >>> model.fit_rows(train_rows, season, sample_weight=sw)
+    """
+    kappa = np.log(2.0) / half_life_days
+    weights = np.empty(len(rows), dtype=np.float64)
+    for i, r in enumerate(rows):
+        age = max(0.0, (cutoff_date - game_dates[r.game_id]).total_seconds() / 86400.0)
+        weights[i] = np.exp(-kappa * age)
+    return weights
+
 
 def win_probability(
     model,

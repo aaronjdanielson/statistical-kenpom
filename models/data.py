@@ -6,13 +6,21 @@ game (so each game produces two rows — one per side).
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-# Default DB path — kept here so the models package has no dependency on
-# ncaa_scraper.  Pass a different path to open_db() to override.
-_DEFAULT_DB = Path("~/Dropbox/kenpom/ncaa.db").expanduser()
+# Default DB path resolution order:
+#   1. NCAA_DB_PATH environment variable   (colleagues set this in their env)
+#   2. ~/Dropbox/kenpom/ncaa.db            (original development machine)
+#   3. ./ncaa.db                            (fallback — CWD)
+_DROPBOX_DB = Path("~/Dropbox/kenpom/ncaa.db").expanduser()
+_DEFAULT_DB: Path = (
+    Path(os.environ["NCAA_DB_PATH"])
+    if "NCAA_DB_PATH" in os.environ
+    else (_DROPBOX_DB if _DROPBOX_DB.exists() else Path("ncaa.db"))
+)
 
 
 @dataclass(frozen=True)

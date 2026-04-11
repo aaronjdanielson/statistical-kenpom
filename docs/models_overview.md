@@ -37,15 +37,16 @@ class KenPomSummary:
 
 ## Model Hierarchy
 
-| | Model 1 | Model 2 | Model 3 |
-|---|---|---|---|
-| **Estimator** | Fixed-point iteration | Ridge regression | Ridge + ALS bilinear |
-| **Statistical foundation** | Heuristic | Penalized likelihood | Penalized likelihood |
-| **Posterior** | Parametric bootstrap | Exact Gaussian | Laplace (main) + Bootstrap (bilinear) |
-| **Interaction term** | None | None | Rank-k inner product |
-| **KenPom mapping** | Trivial (direct) | μ ± coefficients | Same as Model 2 |
-| **Main strength** | Interpretable benchmark | Clean inference | Matchup-specific features |
-| **Main limitation** | No likelihood | No interactions | Non-convex, more expensive |
+| | Model 1 | Model 2 | Model 3 | Model 4 |
+|---|---|---|---|---|
+| **Estimator** | Fixed-point iteration | Ridge regression | Ridge + ALS bilinear | Kalman filter + RTS smoother |
+| **Statistical foundation** | Heuristic | Penalized likelihood | Penalized likelihood | State-space (linear-Gaussian) |
+| **Posterior** | Parametric bootstrap | Exact Gaussian | Laplace (main) + Bootstrap (bilinear) | Kalman filtered / RTS smoothed |
+| **Interaction term** | None | None | Rank-k inner product | None |
+| **Temporal dynamics** | None | None (optional recency weights) | None | Random-walk drift (τ per week) |
+| **KenPom mapping** | Trivial (direct) | μ ± coefficients | Same as Model 2 | Same as Model 2 |
+| **Main strength** | Interpretable benchmark | Clean inference, best RMSE | Matchup-specific features | Correct uncertainty; bias reduction; season trajectory |
+| **Main limitation** | No likelihood | No drift | Non-convex, more expensive | Causal filter loses to M2 on RMSE after week 3 |
 
 ---
 
@@ -132,3 +133,5 @@ model.sample_posterior(n, rng)           → list[np.ndarray]   (raw theta draws
 | [model1_kenpom_fixed_point.md](model1_kenpom_fixed_point.md) | Model 1: multiplicative fixed-point algorithm, bootstrap uncertainty |
 | [model2_ridge_latent_effects.md](model2_ridge_latent_effects.md) | Model 2: ridge regression, exact Gaussian posterior |
 | [model3_bilinear_interaction.md](model3_bilinear_interaction.md) | Model 3: ALS bilinear, Laplace + bootstrap hybrid posterior |
+| [model4_kalman_state_space.md](model4_kalman_state_space.md) | Model 4: Kalman state-space, equivalence theorem, identification analysis |
+| [continuity_prior.md](continuity_prior.md) | Cross-season continuity prior: returning minutes, mean shift, Fix A/B experiment results |
