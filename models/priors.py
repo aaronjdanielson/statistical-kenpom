@@ -40,7 +40,7 @@ from pathlib import Path
 
 import numpy as np
 
-_PORTAL_DB = Path.home() / "Dropbox" / "portal_pivot_db" / "ncaa.db"
+_PORTAL_DB = Path.home() / "Dropbox" / "portal_pivot_db" / "db" / "ncaa.db"
 
 
 # ── Data loading ────────────────────────────────────────────────────────────────
@@ -66,7 +66,7 @@ def load_returning_minutes(
     Parameters
     ----------
     season  : season end-year being fitted (e.g. 2026 for the 2025-26 season)
-    db_path : path to portal_pivot_db/ncaa.db
+    db_path : path to portal_pivot_db/db/ncaa.db
 
     Returns
     -------

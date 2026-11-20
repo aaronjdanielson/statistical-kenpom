@@ -13,13 +13,20 @@ from pathlib import Path
 
 # Default DB path resolution order:
 #   1. NCAA_DB_PATH environment variable   (colleagues set this in their env)
-#   2. ~/Dropbox/kenpom/ncaa.db            (original development machine)
-#   3. ./ncaa.db                            (fallback — CWD)
+#   2. portal_pivot_db's ncaa.db           (the official database: PORTAL_DB_DIR, default
+#                                           ~/Dropbox/portal_pivot_db/db). Ratings built from it
+#                                           match the ones built from this repo's own ncaa.db
+#                                           exactly for 2002-2026 (checked 2026-11-18), and it
+#                                           carries the season in progress.
+#   3. ~/Dropbox/kenpom/ncaa.db            (this repo's own copy, frozen since 2026-04; to be
+#                                           deleted once nothing reads it)
+#   4. ./ncaa.db                            (fallback — CWD)
+_PORTAL_DB = Path(os.environ.get("PORTAL_DB_DIR", "~/Dropbox/portal_pivot_db/db")).expanduser() / "ncaa.db"
 _DROPBOX_DB = Path("~/Dropbox/kenpom/ncaa.db").expanduser()
 _DEFAULT_DB: Path = (
     Path(os.environ["NCAA_DB_PATH"])
     if "NCAA_DB_PATH" in os.environ
-    else (_DROPBOX_DB if _DROPBOX_DB.exists() else Path("ncaa.db"))
+    else next((p for p in (_PORTAL_DB, _DROPBOX_DB) if p.exists()), Path("ncaa.db"))
 )
 
 
@@ -35,7 +42,15 @@ class GameRow:
     h: int             # venue for team_id: +1=home, 0=neutral, -1=away
 
 
-_LOCATION_TO_H = {"Home": 1, "Neutral": 0, "Away": -1}
+# Venue code -> h. schedules.Location is written by ncaa_scraper/parsers/schedule.py as the
+# single letters 'H' / 'A' / 'N'. This map used to list only the long names, so every game
+# silently fell through to neutral (h=0) and no model ever saw home court. The long names
+# stay for callers that pass them; an unrecognised code now raises rather than quietly
+# becoming neutral. A game with no schedules row is still treated as neutral (COALESCE).
+_LOCATION_TO_H = {
+    "H": 1, "A": -1, "N": 0,
+    "Home": 1, "Away": -1, "Neutral": 0,
+}
 
 _QUERY = """
 SELECT
@@ -72,7 +87,13 @@ def load_season_games(
     """
     rows = []
     for gid, ssn, tid, oid, pts, poss, loc in conn.execute(_QUERY, (season, min_poss, min_poss)):
-        h = _LOCATION_TO_H.get(loc, 0)
+        try:
+            h = _LOCATION_TO_H[loc]
+        except KeyError:
+            raise ValueError(
+                f"unrecognised schedules.Location {loc!r} for GameID={gid} TeamID={tid}; "
+                f"expected one of {sorted(_LOCATION_TO_H)}"
+            ) from None
         rows.append(GameRow(
             game_id=gid,
             season=ssn,

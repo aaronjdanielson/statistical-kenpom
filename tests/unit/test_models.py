@@ -447,3 +447,48 @@ def test_min_poss_filter():
     game_ids = {r.game_id for r in rows}
     assert game_ids == {1}, f"Expected only game 1; got game_ids={game_ids}"
     assert len(rows) == 2, f"Expected 2 rows (both sides of game 1); got {len(rows)}"
+
+
+def _venue_db(locations):
+    """In-memory db: one game per entry; locations[i] is team 1's Location (None = no row)."""
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.executescript("""
+        CREATE TABLE boxscores (
+            GameID INTEGER, Season INTEGER, TeamID INTEGER,
+            PTS INTEGER, POSS REAL
+        );
+        CREATE TABLE schedules (
+            GameID INTEGER, TeamID INTEGER, Location TEXT
+        );
+    """)
+    for gid, loc in enumerate(locations, start=1):
+        conn.execute("INSERT INTO boxscores VALUES (?, 2024, 1, 70, 60.0)", (gid,))
+        conn.execute("INSERT INTO boxscores VALUES (?, 2024, 2, 65, 60.0)", (gid,))
+        if loc is not None:
+            conn.execute("INSERT INTO schedules VALUES (?, 1, ?)", (gid, loc))
+    return conn
+
+
+def test_venue_codes_from_scraper():
+    """schedules.Location holds the scraper's single-letter codes; they must reach GameRow.h.
+
+    Regression: the map once listed only 'Home'/'Away'/'Neutral', so every real game
+    loaded as neutral and no model adjusted for home court.
+    """
+    from models.data import load_season_games
+
+    conn = _venue_db(["H", "A", "N", None])
+    h_by_game = {r.game_id: r.h for r in load_season_games(conn, 2024) if r.team_id == 1}
+    assert h_by_game == {1: 1, 2: -1, 3: 0, 4: 0}, (
+        f"expected H->1, A->-1, N->0, no schedule row->0; got {h_by_game}")
+
+
+def test_unknown_venue_code_raises():
+    """An unrecognised Location must fail loudly instead of silently becoming neutral."""
+    import pytest
+    from models.data import load_season_games
+
+    conn = _venue_db(["X"])
+    with pytest.raises(ValueError, match="unrecognised schedules.Location"):
+        load_season_games(conn, 2024)
