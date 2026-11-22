@@ -43,11 +43,12 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
+from models import hub  # noqa: E402
 from models.data import _DEFAULT_DB, load_season_games  # noqa: E402
 from models.model2 import Model2  # noqa: E402
 
 SOURCE_DB = _DEFAULT_DB
-DEFAULT_OUT = REPO / "output" / "team_ratings.db"
+DEFAULT_OUT = hub.out_dir() / "team_ratings.db"        # the hub's handoff directory
 FIRST_SEASON, LAST_SEASON = 2002, 2026
 LAMBDA_TEAM = 500.0          # production value; must stay a float
 

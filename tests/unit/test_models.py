@@ -492,3 +492,30 @@ def test_unknown_venue_code_raises():
     conn = _venue_db(["X"])
     with pytest.raises(ValueError, match="unrecognised schedules.Location"):
         load_season_games(conn, 2024)
+
+
+def test_model2_posterior_sd_matches_the_actual_error_of_the_estimates():
+    """Simulate from Model 2's own model with known team effects: the reported posterior sd of
+    o_i must be the size of the actual error (z-scores with sd 1). Until 2026-11-20 the
+    covariance used the per-game residual variance where the per-possession-scale one belongs,
+    and every sd was too small by sqrt(mean possessions), about 8x."""
+    from models.model2 import Model2
+    from models.data import GameRow
+    rng = np.random.default_rng(7)
+    T, G, lam, sigma2 = 40, 600, 500.0, 13000.0
+    tau = np.sqrt(sigma2 / lam)
+    z = []
+    for _ in range(12):
+        o, d = rng.normal(0, tau, T), rng.normal(0, tau, T)
+        rows = []
+        for g in range(G):
+            i, j = rng.choice(T, 2, replace=False)
+            poss = rng.normal(68, 5)
+            for a, b, h in ((i, j, 1), (j, i, -1)):
+                eff = 105.0 + o[a] - d[b] + 3.0 * h + rng.normal(0, np.sqrt(sigma2 / poss))
+                rows.append(GameRow(g, 2027, int(a), int(b), eff * poss / 100, poss, h))
+        m = Model2(lambda_team=lam).fit_rows(rows, 2027)
+        sd = np.sqrt(np.diag(m._Sigma_eff)[1:1 + T])
+        z += list((m.theta_hat_[1:1 + T] - o) / sd)
+        assert 0.85 < m._sigma2_poss / sigma2 < 1.15
+    assert 0.85 < np.std(z) < 1.15

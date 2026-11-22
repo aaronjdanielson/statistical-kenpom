@@ -35,6 +35,17 @@ import pandas as pd
 from models.data import GameRow
 
 DB_DIR = Path(os.environ.get("PORTAL_DB_DIR", "~/Dropbox/portal_pivot_db/db")).expanduser()
+REPO = Path(__file__).resolve().parents[1]
+
+
+def out_dir() -> Path:
+    """Where this repo writes its builds (team_ratings.db, intl_team_ratings.db, rolling/).
+
+    A spoke stores no data: builds go to portal_pivot_db's handoff directory,
+    $PORTAL_HANDOFF_DIR/kenpom/ (default ~/Dropbox/portal_pivot_db/data/handoff; the hub's
+    nightly step sets the variable), which the hub owns and imports from.
+    """
+    return Path(os.environ.get("PORTAL_HANDOFF_DIR", "~/Dropbox/portal_pivot_db/data/handoff")).expanduser() / "kenpom"
 MIN_POSS = 25.0
 #: exhibitions left out of every league's ratings (NBA / G League season types)
 EXHIBITION = ("Pre Season", "All Star", "All-Star")
@@ -109,6 +120,9 @@ def _pairs(team_games: pd.DataFrame, source: str, min_poss: float) -> pd.DataFra
     j["poss"] = (j.poss_a + j.poss_b) / 2.0
     j["h"] = j["location"].map(H).fillna(0).astype(int)
     j["date"] = pd.to_datetime(j["date"], errors="coerce")
+    # One date per game. A team with no schedule row has no date of its own (250 NCAA games,
+    # 2003-2011); left as it was, a dated snapshot kept only the other team's half of the game.
+    j["date"] = j.groupby(["league_id", "game_id"])["date"].transform("min")
     j["source"] = source
     return j
 

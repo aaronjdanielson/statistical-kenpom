@@ -20,7 +20,7 @@ Typical usage
 -------------
 Fit Model2 on season s-1 to obtain previous-season effects, then:
 
-    from models.model2 import Model2
+    from models.model2 import Model2, _noise_variance
     from models.model2_continuity import Model2ContinuityPrior
     from models.priors import extract_prev_effects, load_returning_minutes
 
@@ -43,7 +43,7 @@ import logging
 import numpy as np
 from scipy import linalg
 
-from models.model2 import Model2
+from models.model2 import Model2, _noise_variance
 from models.priors import build_continuity_prior
 
 logger = logging.getLogger(__name__)
@@ -152,7 +152,7 @@ class Model2ContinuityPrior(Model2):
             # Fix B: keep P identical to Model2's uniform ridge — only the mean
             # shifts.  Isolates the question "does centering at last year's
             # rating help?" without changing regularization strength.
-            lam            = np.full(n_cols, self.lambda_team)
+            lam            = np.full(n_cols, float(self.lambda_team))
             lam[0]         = 1e-4
             lam[2 * T + 1] = 1e-4
             prior_p_diag   = lam
@@ -171,7 +171,10 @@ class Model2ContinuityPrior(Model2):
         resid = y - X @ theta_hat
         self._sigma2_eff = float(np.average(resid ** 2, weights=w))
 
-        Sigma = self._sigma2_eff * linalg.inv(A)
+        # posterior covariance on the per-possession scale (see Model2._fit_efficiency)
+        A_inv = linalg.inv(A)
+        self._sigma2_poss, self._df_eff = _noise_variance(resid, w, prior_p_diag, A_inv, sample_weight)
+        Sigma = self._sigma2_poss * A_inv
 
         n_with_prior = sum(
             1 for tid in self.teams_

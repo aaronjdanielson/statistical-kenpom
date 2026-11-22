@@ -56,6 +56,15 @@ def _safe_cholesky(M: np.ndarray) -> np.ndarray:
     return np.diag(np.sqrt(np.maximum(np.diag(M), 1e-10)))
 
 
+def _noise_variance(resid, w, penalty, A_inv, sample_weight=None) -> tuple[float, float]:
+    """Per-possession-scale noise variance s2 with Var(e_k) = s2 / poss_k, and the effective
+    degrees of freedom: s2 = sum(w r^2) / (n - df), df = tr(A^-1 X'WX) = p - sum(diag(A^-1) penalty).
+    n is the number of rows, or the sum of the sample weights when rows are down-weighted."""
+    n = float(len(resid)) if sample_weight is None else float(np.sum(sample_weight))
+    df = float(len(penalty) - np.sum(np.diag(A_inv) * penalty))
+    return float(np.sum(w * resid ** 2) / max(n - df, 1.0)), df
+
+
 class Model2(BaseModel):
     """
     Ridge latent-effects model with exact Gaussian posterior sampling.
@@ -236,7 +245,7 @@ class Model2(BaseModel):
         # μ and η nominally unpenalized, but a tiny jitter (1e-4) is added to
         # the full diagonal to break the structural linear dependence
         # (intercept col = sum of all o cols), ensuring a non-singular solve.
-        lam = np.full(n_cols, self.lambda_team)
+        lam = np.full(n_cols, float(self.lambda_team))   # float: an int lambda would truncate the 1e-4 below to 0
         lam[0]         = 1e-4   # μ: near-zero ridge for stability
         lam[2 * T + 1] = 1e-4   # η: near-zero ridge for stability
 
@@ -245,11 +254,19 @@ class Model2(BaseModel):
         b    = Xw.T @ y                      # X'Wy
         theta_hat = linalg.solve(A, b, assume_a="sym")
 
-        # Noise variance from weighted residuals
+        # Noise variance from weighted residuals: the variance of efficiency in a game of
+        # average possessions, (pts/100)^2 -- about RMSE^2.
         resid = y - X @ theta_hat
         self._sigma2_eff = float(np.average(resid ** 2, weights=w))
 
-        Sigma = self._sigma2_eff * linalg.inv(A)
+        # Posterior covariance. The noise model is Var(e_k) = s2 / poss_k and A = X'WX + Lambda
+        # is in possession units, so the variance that goes with A^-1 is the per-possession-scale
+        # s2 = sum(w r^2) / (n - df), df = tr(A^-1 X'WX) the effective number of parameters.
+        # (_sigma2_eff, s2 / mean possessions, was used here until 2026-11-20, which made every
+        # posterior sd too small by sqrt(mean possessions), about 8x.)
+        A_inv = linalg.inv(A)
+        self._sigma2_poss, self._df_eff = _noise_variance(resid, w, lam, A_inv, sample_weight)
+        Sigma = self._sigma2_poss * A_inv
         return theta_hat, Sigma
 
     def _fit_pace(
@@ -300,7 +317,7 @@ class Model2(BaseModel):
             y[k] = np.log(max(poss, 1.0))
 
         # Penalty: λ_pace on r; tiny ridge on γ₀ and γ_h for stability
-        lam = np.full(n_cols, self.lambda_pace)
+        lam = np.full(n_cols, float(self.lambda_pace))
         lam[0]     = 1e-4
         lam[T + 1] = 1e-4
 

@@ -73,6 +73,19 @@ def test_espn_fill_seasons_in_progress_and_where_realgm_ends_early(tmp_path):
     assert hub.espn_fill_seasons(tmp_path, today=date(2027, 11, 19)) == [2026, 2027, 2028]
 
 
+def test_a_team_without_a_schedule_row_takes_the_games_date(tmp_path):
+    make(tmp_path)
+    c = sqlite3.connect(tmp_path / "ncaa.db")
+    c.executemany("INSERT INTO team_boxscore VALUES (?,?,?,?,?,?,?,?,?)", [
+        ("NCAA-D1", 2027, 4, "2026-11-07", 10, 81, 70.0, "H", "regular_season"),
+        ("NCAA-D1", 2027, 4, None, 30, 64, 70.0, None, "regular_season")])        # no schedule row for this team
+    c.commit()
+    g4 = hub.load("ncaa", db_dir=tmp_path).query("game_id == 4")
+    assert len(g4) == 2 and set(g4.date.dt.date.astype(str)) == {"2026-11-07"}
+    days = R.snapshot_dates(g4.date, n_teams=2)
+    assert all(len(g4[g4.date.dt.normalize() <= d]) in (0, 2) for d in days)       # never half a game
+
+
 def test_exhibitions_are_left_out(tmp_path):
     make(tmp_path)
     assert list(hub.load("nba", db_dir=tmp_path).game_id.unique()) == [8]

@@ -12,7 +12,8 @@
 #   ./update_ratings.sh --leagues NCAA-D1 --seasons 2027
 #
 # Environment: PORTAL_DB_DIR (portal_pivot_db's db/ directory; default
-# ~/Dropbox/portal_pivot_db/db), KENPOM_PYTHON (default nba_draft_prediction's .venv,
+# ~/Dropbox/portal_pivot_db/db), PORTAL_HANDOFF_DIR (the hub's handoff directory, default
+# ~/Dropbox/portal_pivot_db/data/handoff: builds go to $PORTAL_HANDOFF_DIR/kenpom/rolling), KENPOM_PYTHON (default nba_draft_prediction's .venv,
 # which has numpy, scipy and pandas). Output goes to stdout and logs/update_ratings_<date>.log.
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")" && pwd)
@@ -21,7 +22,7 @@ cd "$REPO"
 mkdir -p logs
 LOG="logs/update_ratings_$(date +%Y%m%d).log"
 exec > >(tee -a "$LOG") 2>&1
-echo "======== $(date)  update_ratings.sh $*  (PORTAL_DB_DIR=${PORTAL_DB_DIR:-default})"
+echo "======== $(date)  update_ratings.sh $*  (PORTAL_DB_DIR=${PORTAL_DB_DIR:-default}, PORTAL_HANDOFF_DIR=${PORTAL_HANDOFF_DIR:-default})"
 set +e
 "$PY" scripts/rolling_ratings.py compute "$@"
 STATUS=$?

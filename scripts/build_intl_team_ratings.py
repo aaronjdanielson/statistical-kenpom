@@ -6,8 +6,17 @@ but iterates over (season × league) instead of just season, because intl teams
 from different domestic leagues rarely play each other. Each league's rating
 system is fit independently.
 
-Writes output/intl_team_ratings.db (gitignored by *.db). intl.db is opened
-READ-ONLY.
+Reads portal_pivot_db's intl.db, the official database, through its standard
+team_boxscore view (models/hub.py; PORTAL_DB_DIR, read-only): the same rows this
+repo's own intl.db gave (both teams in the league, at least 25 possessions each),
+with each game in RealGM's own competition season. This repo's intl.db is a frozen
+copy that keeps the old June-1 season rule and is no longer read.
+
+A run over every league and the default seasons rebuilds the file from empty, so a
+(league, season) that no longer exists in the hub leaves no rows behind; a run
+limited by --seasons / --leagues replaces only those league-seasons.
+
+Writes intl_team_ratings.db in the hub's handoff directory (models.hub.out_dir()).
 
 Usage:
     PY=~/Dropbox/nba_draft_prediction/.venv/bin/python
@@ -30,13 +39,11 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from intl_scraper.models_data import (          # noqa: E402
-    load_season_league_games, enumerate_league_seasons, open_intl_db,
-)
+from models import hub                          # noqa: E402
 from models.model2 import Model2                # noqa: E402
 
-SOURCE_DB   = REPO / "intl.db"
-DEFAULT_OUT = REPO / "output" / "intl_team_ratings.db"
+SOURCE_DB   = hub.DB_DIR / "intl.db"            # portal_pivot_db's, read-only
+DEFAULT_OUT = hub.out_dir() / "intl_team_ratings.db"   # the hub's handoff directory
 FIRST_SEASON, LAST_SEASON = 2001, 2026
 LAMBDA_TEAM = 500.0
 
@@ -100,27 +107,35 @@ def git_state() -> tuple[str | None, int | None]:
 
 
 def build(seasons: set[int], leagues: set[int] | None,
-          out: Path, lambda_team: float) -> int:
+          out: Path, lambda_team: float, fresh: bool = False) -> int:
     if not isinstance(lambda_team, float):
         raise TypeError("lambda_team must be a float")
     if not SOURCE_DB.exists():
         raise SystemExit(f"source database not found: {SOURCE_DB}")
 
-    src = open_intl_db(SOURCE_DB)
-    dst = sqlite3.connect(out)
+    # (league, season) with at least 50 box-scored games, as before; league ids are
+    # the hub's 'INTL-<RealGM league id>', stored here as the integer RealGM id
+    candidates = [(s, int(l.split("-", 1)[1]), l, n) for l, s, n in hub.league_seasons("intl", min_games=50)]
+    candidates = sorted((s, lid, l, n) for s, lid, l, n in candidates
+                        if s in seasons and (leagues is None or lid in leagues))
+    frame = hub.load("intl", leagues={l for _, _, l, _ in candidates}, seasons={s for s, _, _, _ in candidates})
+    groups = dict(tuple(frame.groupby(["league_id", "season"])))
+
+    target = out.with_suffix(out.suffix + ".tmp") if fresh else out
+    if fresh and target.exists():
+        target.unlink()
+    dst = sqlite3.connect(target)
     dst.executescript(SCHEMA)
     commit, dirty = git_state()
     built_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     n_fits = 0
 
     try:
-        candidates = enumerate_league_seasons(src, min_games=50)
-        candidates = [(s, lid, n) for s, lid, n in candidates
-                      if s in seasons and (leagues is None or lid in leagues)]
         print(f"fitting {len(candidates)} (season × league) universes:")
 
-        for season, league_id, n_games in candidates:
-            rows = load_season_league_games(src, season, league_id)
+        for season, league_id, hub_league, n_games in candidates:
+            games = groups.get((hub_league, season))
+            rows = hub.rows(games) if games is not None else []
             if len(rows) < 20:
                 print(f"  s={season} L={league_id:>3}  skipped (too few rows)")
                 continue
@@ -160,26 +175,30 @@ def build(seasons: set[int], leagues: set[int] | None,
                   f"{len(rows):>5,} rows  H/A/N {venue[1]:>4}/{venue[-1]:>4}/{venue[0]:>3}  "
                   f"home {home_effect:+.2f}")
     finally:
-        src.close()
         dst.close()
+    if fresh:
+        target.replace(out)
 
     return n_fits
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--seasons", default=f"{FIRST_SEASON}-{LAST_SEASON}")
+    ap.add_argument("--seasons", default=None,
+                    help=f"range like 2024-2026 or list; default {FIRST_SEASON}-{LAST_SEASON}")
     ap.add_argument("--leagues", default=None,
-                    help="comma list of LeagueIDs; default all in intl.db")
+                    help="comma list of RealGM LeagueIDs; default all in the hub's intl.db")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = ap.parse_args()
 
-    seasons = set(parse_seasons(args.seasons))
+    fresh = args.seasons is None and args.leagues is None      # everything: rebuild from empty
+    seasons = set(parse_seasons(args.seasons or f"{FIRST_SEASON}-{LAST_SEASON}"))
     leagues = parse_leagues(args.leagues)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     print(f"Model2 lambda_team={LAMBDA_TEAM}  seasons={sorted(seasons)}  "
-          f"leagues={sorted(leagues) if leagues else 'all'}")
-    n = build(seasons, leagues, args.out, LAMBDA_TEAM)
+          f"leagues={sorted(leagues) if leagues else 'all'}  source={SOURCE_DB} (read-only)"
+          f"{'  [rebuild from empty]' if fresh else ''}")
+    n = build(seasons, leagues, args.out, LAMBDA_TEAM, fresh=fresh)
     print(f"\nfit {n} (season × league) universes → {args.out}")
     return 0
 
