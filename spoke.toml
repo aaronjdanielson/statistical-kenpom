@@ -1,0 +1,68 @@
+# How to operate this spoke: the spoke standard, ~/Dropbox/portal_pivot_db/docs/SPOKES.md.
+standard = 2
+name = "kenpom"
+role = "model"
+package = "models"
+
+[env]
+python = ".venv/bin/python"
+lock = "requirements.lock"
+setup = "/opt/homebrew/bin/python3 -m venv .venv && .venv/bin/pip install -r requirements.lock"
+
+[commands]                       # run from the repo root
+test = ".venv/bin/python -m pytest tests/unit -q"            # no hub, no network (tests/integration need the hub)
+update = "./update_ratings.sh"                               # nightly: league-seasons in progress (the hub sets PORTAL_DB_DIR, PORTAL_HANDOFF_DIR)
+backfill = "./update_ratings.sh --all"                       # every league-season, in season order (~5 minutes)
+seasons = ".venv/bin/python scripts/build_team_ratings.py && .venv/bin/python scripts/build_intl_team_ratings.py"   # season files; imported by hand
+
+# Everything models/hub.py reads (rolling ratings, international season ratings).
+[[reads]]
+db = "ncaa"
+table = "team_boxscore"
+columns = ["league_id", "season", "game_id", "date", "team_id", "pts", "poss", "location", "game_type"]
+
+[[reads]]
+db = "ncaa"
+table = "team_boxscore_espn"     # the NCAA season in progress: games RealGM has not posted
+columns = ["league_id", "season", "game_id", "date", "team_id", "pts", "poss", "location", "realgm_game_id"]
+
+[[reads]]
+db = "intl"
+table = "team_boxscore"
+columns = ["league_id", "season", "game_id", "date", "team_id", "pts", "poss", "location", "game_type"]
+
+[[reads]]
+db = "national"
+table = "team_boxscore"
+columns = ["league_id", "season", "game_id", "date", "team_id", "pts", "poss", "location", "game_type"]
+
+[[reads]]
+db = "nba"
+table = "team_boxscore"
+columns = ["league_id", "season", "game_id", "date", "team_id", "pts", "poss", "location", "game_type"]
+
+# models/data.py (NCAA season ratings, scripts/build_team_ratings.py)
+[[reads]]
+db = "ncaa"
+table = "boxscores"
+columns = ["GameID", "Season", "TeamID", "PTS", "POSS"]
+
+[[reads]]
+db = "ncaa"
+table = "schedules"
+columns = ["GameID", "TeamID", "Location"]
+
+# models/priors.py load_returning_minutes (research: the returning-minutes prior; not in the nightly)
+[[reads]]
+db = "ncaa"
+table = "player_summaries"
+columns = ["PlayerID", "Season", "TeamID", "MIN"]
+
+[outputs]
+root = "~/Dropbox/portal_pivot_db/data/handoff/kenpom"         # $PORTAL_HANDOFF_DIR/kenpom: rolling/, team_ratings.db, intl_team_ratings.db
+in_service = "hub:kenpom_rolling"                             # the hub versions every build on import and serves the newest
+status = "~/Dropbox/portal_pivot_db/data/handoff/kenpom/last_run.json"   # written by every update run
+
+[waivers]
+R4 = "outputs are one file pair per league-season (rolling/<league>/<season>.parquet + .json), rewritten only when its inputs change; each .json carries its provenance (inputs hash, settings, the previous season's build, code tree hash, environment). The hub keeps the versions: every import is a new, never-overwritten run in data/models/kenpom_rolling/<run_id>/. Layout under discussion with the standard's author (2026-11-21)."
+R7 = "renaming models/ would change 120 import lines in 32 files; and the repo still holds frozen copies of the hub's data (ncaa.db, intl.db, national.db, checkpoints.db, backups, output/), which ncaa_roster_prediction and portal-machine-analysis still read. Both go with the retirement of this repo's scrapers and databases, once those readers move (check_ecosystem.py --refs kenpom) and with the user's go-ahead"

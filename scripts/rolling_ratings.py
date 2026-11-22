@@ -62,6 +62,7 @@ hence the key, of the league's later seasons: compute --all refits those too.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import subprocess
@@ -76,7 +77,7 @@ import pandas as pd
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from models import hub, overlap  # noqa: E402
+from models import hub, overlap, provenance  # noqa: E402
 from models.model2_chain import Model2Chain  # noqa: E402
 
 import logging  # noqa: E402
@@ -114,6 +115,29 @@ COLUMNS = ["league_id", "season", "snapshot_date", "snapshot_idx", "team_id", "a
 
 def league_type(league_id: str) -> str:
     return league_id.split("-")[0] if league_id.startswith(("INTL-", "NT-")) else league_id
+
+
+@functools.lru_cache(maxsize=1)
+def code() -> dict:
+    """The code and environment of this run (one git call per run, not per build)."""
+    return {"code": provenance.code_state(), "environment": provenance.environment()}
+
+
+def status_path() -> Path:
+    """The file every compute run writes (the spoke standard's R5): next to rolling/."""
+    return OUT.parent / "last_run.json"
+
+
+def write_status(started: datetime, args, built: int, unchanged: int, failures: list[dict]) -> None:
+    path = status_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = {"finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+           "started_at": started.isoformat(timespec="seconds"), "command": "compute",
+           "args": {k: (sorted(v) if isinstance(v, set) else v) for k, v in vars(args).items() if k != "cmd"},
+           "built": built, "unchanged": unchanged, "failed": len(failures), "failures": failures, **code()}
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(doc, indent=1, default=str))
+    tmp.replace(path)
 
 
 def code_commit() -> str:
@@ -259,21 +283,25 @@ def write(league_id: str, season: int, df: pd.DataFrame, key: dict, games: pd.Da
             "n_games": int(len(games) // 2), "n_games_espn": int((games.source == "espn").sum() // 2),
             "last_game_date": games.date.max().date().isoformat() if len(games) else None,
             "source": "portal_pivot_db standard team_boxscore" + (" + team_boxscore_espn" if key["espn_fill"] else ""),
-            **summary}
+            **summary, **code()}
     tmp = js_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(meta, indent=1))
     tmp.replace(js_path)
 
 
-def wanted(args) -> dict[str, list[tuple[str, int]]]:
-    """database → [(league, season)] to (re)compute."""
+def wanted(args, failures: list | None = None) -> dict[str, list[tuple[str, int]]]:
+    """database → [(league, season)] to (re)compute. A database that cannot be read is
+    recorded in *failures*: the run did not cover it."""
     today = date.today()
     out: dict[str, list[tuple[str, int]]] = {}
     for db in hub.DATABASES:
         try:
             ls = hub.league_seasons(db, min_games=args.min_games)
-        except Exception as e:                       # a database being rebuilt: skip it this run
+        except Exception as e:                       # a database being rebuilt: this run cannot cover it
             print(f"  {db}: cannot list league-seasons ({e})")
+            if failures is not None:
+                failures.append({"database": db, "league_id": None, "season": None,
+                                 "error": f"cannot list league-seasons: {type(e).__name__}: {e}"})
             continue
         if args.leagues:
             ls = [x for x in ls if x[0] in args.leagues]
@@ -298,44 +326,58 @@ def wanted(args) -> dict[str, list[tuple[str, int]]]:
 
 
 def compute(args) -> int:
-    todo = wanted(args)
-    fill = set(hub.espn_fill_seasons()) if "ncaa" in todo and not args.no_espn else set()
-    done = skipped = failed = 0
+    started, failures = datetime.now(timezone.utc), []
+    done = skipped = 0
     t0 = time.time()
-    for db, items in todo.items():
-        leagues = sorted({l for l, _ in items})
-        seasons = sorted({s for _, s in items})
-        espn = sorted(fill & set(seasons)) if db == "ncaa" else []
-        frame = hub.load(db, leagues=leagues, seasons=seasons, espn_seasons=espn)
-        groups = dict(tuple(frame.groupby(["league_id", "season"])))
-        for league_id, season in sorted(items):          # a league's seasons in order: each starts from the one before
-            games = groups.get((league_id, season))
-            if games is None or games.empty:
-                continue
+    try:
+        todo = wanted(args, failures)
+        fill = set(hub.espn_fill_seasons()) if "ncaa" in todo and not args.no_espn else set()
+        for db, items in todo.items():
+            leagues = sorted({l for l, _ in items})
+            seasons = sorted({s for _, s in items})
+            espn = sorted(fill & set(seasons)) if db == "ncaa" else []
             try:
-                prior = load_prior(league_id, season, games.date.min())
-                key = key_of(league_id, season, games, season in espn, prior)
-                _, js = paths(league_id, season)
-                if not args.force and js.exists():
-                    try:
-                        if json.loads(js.read_text()).get("key") == key:
-                            skipped += 1
-                            continue
-                    except ValueError:
-                        pass
-                df, summary = fit_snapshots(league_id, season, games, prior)
-            except Exception as e:                   # a degenerate league-season: report, carry on
-                failed += 1
-                print(f"  {league_id} {season}: failed ({type(e).__name__}: {e})")
+                frame = hub.load(db, leagues=leagues, seasons=seasons, espn_seasons=espn)
+            except Exception as e:                   # a database being rebuilt: report, carry on
+                failures.append({"database": db, "league_id": None, "season": None, "error": f"{type(e).__name__}: {e}"})
+                print(f"  {db}: cannot load games ({type(e).__name__}: {e})")
                 continue
-            write(league_id, season, df, key, games, summary)
-            done += 1
-            if args.verbose or done % 100 == 0:
-                print(f"  {league_id} {season}: {df.snapshot_idx.max()} snapshots, {len(games) // 2} games "
-                      f"({(games.source == 'espn').sum() // 2} from ESPN), starts from "
-                      f"{prior['season'] if prior else 'league average'}  [{done} built, {time.time() - t0:.0f}s]")
-    print(f"rolling ratings: {done} built, {skipped} unchanged, {failed} failed  ({time.time() - t0:.0f}s)")
-    return 1 if failed else 0                          # any failure fails the hub's nightly step
+            groups = dict(tuple(frame.groupby(["league_id", "season"])))
+            for league_id, season in sorted(items):      # a league's seasons in order: each starts from the one before
+                games = groups.get((league_id, season))
+                if games is None or games.empty:
+                    continue
+                try:
+                    prior = load_prior(league_id, season, games.date.min())
+                    key = key_of(league_id, season, games, season in espn, prior)
+                    _, js = paths(league_id, season)
+                    if not args.force and js.exists():
+                        try:
+                            if json.loads(js.read_text()).get("key") == key:
+                                skipped += 1
+                                continue
+                        except ValueError:
+                            pass
+                    df, summary = fit_snapshots(league_id, season, games, prior)
+                except Exception as e:               # a degenerate league-season: report, carry on
+                    failures.append({"database": db, "league_id": league_id, "season": int(season),
+                                     "error": f"{type(e).__name__}: {e}"})
+                    print(f"  {league_id} {season}: failed ({type(e).__name__}: {e})")
+                    continue
+                write(league_id, season, df, key, games, summary)
+                done += 1
+                if args.verbose or done % 100 == 0:
+                    print(f"  {league_id} {season}: {df.snapshot_idx.max()} snapshots, {len(games) // 2} games "
+                          f"({(games.source == 'espn').sum() // 2} from ESPN), starts from "
+                          f"{prior['season'] if prior else 'league average'}  [{done} built, {time.time() - t0:.0f}s]")
+    except BaseException as e:                       # anything else: still say so in the status file
+        failures.append({"database": None, "league_id": None, "season": None, "error": f"run aborted: {type(e).__name__}: {e}"})
+        write_status(started, args, done, skipped, failures)
+        raise
+    write_status(started, args, done, skipped, failures)
+    print(f"rolling ratings: {done} built, {skipped} unchanged, {len(failures)} failed  ({time.time() - t0:.0f}s)"
+          f"  -> {status_path()}")
+    return 1 if failures else 0                      # any failure fails the hub's nightly step
 
 
 def status(args) -> int:

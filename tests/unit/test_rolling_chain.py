@@ -190,12 +190,37 @@ def test_a_run_with_any_failure_exits_non_zero(tmp_path, monkeypatch):
     rows_a, _ = league(11, games=120, season=2025)
     rows_b, _ = league(12, games=120, season=2025, start_gid=500)
     games = pd.concat([frame(rows_a, league_id="INTL-900"), frame(rows_b, league_id="INTL-901")], ignore_index=True)
-    monkeypatch.setattr(R, "OUT", tmp_path)
-    monkeypatch.setattr(R, "wanted", lambda args: {"intl": [("INTL-900", 2025), ("INTL-901", 2025)]})
+    out = tmp_path / "rolling"
+    monkeypatch.setattr(R, "OUT", out)
+    monkeypatch.setattr(R, "wanted", lambda args, failures=None: {"intl": [("INTL-900", 2025), ("INTL-901", 2025)]})
     monkeypatch.setattr(R.hub, "load", lambda db, **kw: games)
-    old = tmp_path / "INTL-901"                     # INTL-901's previous season is in the old layout
-    old.mkdir()
+    old = out / "INTL-901"                          # INTL-901's previous season is in the old layout
+    old.mkdir(parents=True)
     (old / "2024.json").write_text(json.dumps({"key": {"layout": "rolling-ratings-v1"}, "last_game_date": "2024-05-01"}))
     (old / "2024.parquet").write_bytes(b"")
     assert R.compute(argparse.Namespace(no_espn=True, force=False, verbose=False)) == 1
-    assert (tmp_path / "INTL-900" / "2025.json").exists() and not (tmp_path / "INTL-901" / "2025.json").exists()
+    assert (out / "INTL-900" / "2025.json").exists() and not (out / "INTL-901" / "2025.json").exists()
+    # the status file (the spoke standard's R5) says what happened
+    st = json.loads((tmp_path / "last_run.json").read_text())
+    assert (st["built"], st["unchanged"], st["failed"]) == (1, 0, 1)
+    assert st["failures"][0]["league_id"] == "INTL-901" and "older layout" in st["failures"][0]["error"]
+    assert len(st["code"]["tree_sha256"]) == 64 and st["finished_at"]
+    meta = json.loads((out / "INTL-900" / "2025.json").read_text())
+    assert meta["code"]["tree_sha256"] == st["code"]["tree_sha256"] and "numpy" in meta["environment"]
+    # a second run changes nothing and says so
+    (old / "2024.json").unlink(); (old / "2024.parquet").unlink()
+    assert R.compute(argparse.Namespace(no_espn=True, force=False, verbose=False)) == 0
+    st = json.loads((tmp_path / "last_run.json").read_text())
+    assert (st["built"], st["unchanged"], st["failed"]) == (1, 1, 0)
+
+
+def test_code_tree_hash_follows_the_code_not_the_commit(tmp_path):
+    from models import provenance
+    (tmp_path / "models").mkdir(); (tmp_path / "scripts").mkdir()
+    (tmp_path / "models" / "a.py").write_text("x = 1\n")
+    (tmp_path / "scripts" / "rolling_ratings.py").write_text("y = 2\n")
+    first = provenance.tree_sha256(tmp_path)
+    (tmp_path / "models" / "notes.md").write_text("not code")
+    assert provenance.tree_sha256(tmp_path) == first
+    (tmp_path / "models" / "a.py").write_text("x = 2\n")
+    assert provenance.tree_sha256(tmp_path) != first

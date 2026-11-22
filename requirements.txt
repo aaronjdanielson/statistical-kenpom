@@ -1,0 +1,11 @@
+# kenpom's environment (the spoke standard, R2). Exact versions: requirements.lock.
+# Same versions as the interpreter the nightly used until 2026-11-21 (nba_draft_prediction's .venv),
+# so the ratings do not change with the move.
+numpy==2.4.4
+scipy==1.17.1
+pandas==3.0.2
+pyarrow==23.0.1
+pytest==9.0.3
+# the scraper parsers' tests (ncaa_scraper/, to be retired with this repo's databases)
+beautifulsoup4==4.14.3
+lxml==6.0.3

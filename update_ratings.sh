@@ -13,11 +13,11 @@
 #
 # Environment: PORTAL_DB_DIR (portal_pivot_db's db/ directory; default
 # ~/Dropbox/portal_pivot_db/db), PORTAL_HANDOFF_DIR (the hub's handoff directory, default
-# ~/Dropbox/portal_pivot_db/data/handoff: builds go to $PORTAL_HANDOFF_DIR/kenpom/rolling), KENPOM_PYTHON (default nba_draft_prediction's .venv,
-# which has numpy, scipy and pandas). Output goes to stdout and logs/update_ratings_<date>.log.
+# ~/Dropbox/portal_pivot_db/data/handoff: builds go to $PORTAL_HANDOFF_DIR/kenpom/rolling), KENPOM_PYTHON (default this repo's .venv: build it with
+# spoke.toml [env] setup). Output goes to stdout and logs/update_ratings_<date>.log.
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")" && pwd)
-PY=${KENPOM_PYTHON:-$HOME/Dropbox/nba_draft_prediction/.venv/bin/python}
+PY=${KENPOM_PYTHON:-$REPO/.venv/bin/python}
 cd "$REPO"
 mkdir -p logs
 LOG="logs/update_ratings_$(date +%Y%m%d).log"
